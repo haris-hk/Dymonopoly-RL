@@ -9,6 +9,8 @@ class DymonopolyEnv(gym.Env):
         super().__init__()
         
         #stuff i m adding, rough
+        
+
         self.properties = [
         {"name": "GO", "type": "corner", "corner": "go"},
 
@@ -170,10 +172,33 @@ class DymonopolyEnv(gym.Env):
         ]
 
 
-        self.num_properties = num_properties
+        self.num_properties = 40
         self.num_players = num_players
         self.turn_counter = 0
         self.price_update_interval = 5
+        self.players = []
+
+        for i in range (self.num_players):
+            self.players.append([{"id": i , "owns": [], "money": 1500, "jail": False, "bankrupt" : False}])
+
+
+        # Baseline market state
+        self.base_prices = np.array([prop.get("price", 0) for prop in self.properties], dtype=float)
+        self.current_prices = self.base_prices.copy()
+        self.visiting_freq = np.zeros(self.num_properties)
+        self.trading_freq = np.zeros(self.num_properties)
+        self.property_owners = np.full(self.num_properties, -1)
+        self.player_cash = np.full(self.num_players, 1500, dtype=float)
+        self.current_player = 0
+
+        # Reward weights (tunable)
+        self.liquidity_weight = 1.0
+        self.volatility_weight = 1.0
+        self.inequality_weight = 0.6
+        self.survival_weight = 0.2
+
+
+
         
         # Observation space: property prices, ownership, player positions, cash, etc.
         self.observation_space = spaces.Dict({
@@ -191,6 +216,7 @@ class DymonopolyEnv(gym.Env):
 
         
     def _get_obs(self):
+        """Return observation using numpy arrays (authoritative state)"""
         return {
             "property_prices": self.current_prices,
             "property_owners": self.property_owners,
@@ -203,14 +229,29 @@ class DymonopolyEnv(gym.Env):
     def _get_info(self):
         return {"turn": self.turn_counter}
     
+    def _sync_property_dicts(self):
+        """Sync numpy arrays back to property dicts for rendering/debugging"""
+        for prop_id in range(self.num_properties):
+            if "price" in self.properties[prop_id]:
+                self.properties[prop_id]["price"] = float(self.current_prices[prop_id])
+            self.properties[prop_id]["owned_by"] = int(self.property_owners[prop_id])
+            self.properties[prop_id]["visiting_freq"] = float(self.visiting_freq[prop_id])
+            self.properties[prop_id]["trading_frequency"] = float(self.trading_freq[prop_id])
+    
     def _update_prices(self):
         """Update prices every 5 turns based on market factors"""
         for prop_id in range(self.num_properties):
+            property_data = self.properties[prop_id]
+            
+            # Skip properties without prices (corners, chance, chest)
+            if self.base_prices[prop_id] == 0:
+                continue
+            
             # i) Visiting frequency: more visits = higher price
             visit_factor = 1 + (self.visiting_freq[prop_id] * 0.05)
             
             # ii) Similar properties: average price of property group
-            similar_factor = self._get_similar_property_factor(prop_id)
+            similar_factor = self._get_similar_property_factor(property_data)
             
             # iii) Cash liquidity: total market cash
             liquidity_factor = 1 + (np.sum(self.player_cash) / 10000 - 1) * 0.1
@@ -221,17 +262,76 @@ class DymonopolyEnv(gym.Env):
             # v) Shock events: random events (can be expanded)
             shock_factor = np.random.choice([0.8, 1.0, 1.2], p=[0.1, 0.8, 0.1])
             
-            # Update price
+            # Update price in numpy array
             self.current_prices[prop_id] = (
                 self.base_prices[prop_id] * 
                 visit_factor * similar_factor * liquidity_factor * 
                 trade_factor * shock_factor
             )
+        
+        # Sync updated prices back to property dicts
+        self._sync_property_dicts()
     
-    def _get_similar_property_factor(self, prop_id):
-        """Calculate price influence from similar properties (same color group)"""
-        # Implement grouping logic based on your game
-        return 1.0
+    def _get_similar_property_factor(self, property_data):
+        """Calculate price influence from similar properties (same color group)
+        
+        If 50%+ of same-color properties are owned by one player: price increases (1.2x)
+        If properties are owned by different players: price decreases (0.8x)
+        Otherwise: neutral (1.0x)
+        """
+        if not isinstance(property_data, dict):
+            return 1.0
+
+        color = property_data.get("color")
+        if not color:
+            return 1.0
+
+        # Find all properties in the same color group
+        group_indices = [idx for idx, prop in enumerate(self.properties) if prop.get("color") == color]
+        if len(group_indices) <= 1:
+            return 1.0
+
+        # Get owners for this color group
+        group_owners = [self.property_owners[idx] for idx in group_indices]
+        
+        # Count owned properties (exclude unowned = -1)
+        owned_properties = [owner for owner in group_owners if owner >= 0]
+        
+        if len(owned_properties) == 0:
+            return 1.0
+        
+        # Check if 50%+ are owned by the same player
+        from collections import Counter
+        owner_counts = Counter(owned_properties)
+        max_count = max(owner_counts.values())
+        total_in_group = len(group_indices)
+        
+        if max_count / total_in_group >= 0.5:
+            # Monopoly/concentration detected -> price increases
+            return 1.2
+        elif len(owner_counts) > 1:
+            # Multiple different owners -> price decreases
+            return 0.8
+        else:
+            return 1.0
+
+    def _gini_coefficient(self, values):
+        """Return Gini coefficient (0 = equal, 1 = concentrated)."""
+        values = np.asarray(values, dtype=float)
+        if values.size == 0:
+            return 0.0
+
+        # Negative wealth is not expected; clip at zero to avoid artifacts
+        values = np.clip(values, 0.0, None)
+        total = values.sum()
+        if total == 0:
+            return 0.0
+
+        sorted_vals = np.sort(values)
+        n = sorted_vals.size
+        cumulative = np.cumsum(sorted_vals)
+        gini = (n + 1 - 2 * np.sum(cumulative) / cumulative[-1]) / n
+        return float(np.clip(gini, 0.0, 1.0))
     
     def step(self, action):
         # Execute action, update game state
@@ -245,8 +345,8 @@ class DymonopolyEnv(gym.Env):
             self._update_prices()
         
         obs = self._get_obs()
-        reward = 0  # Define your reward function
-        terminated = False  # Game end condition
+        reward = self.reward_function()  # Define your reward function
+        terminated = self.game_end_cond()  # Game end condition
         truncated = False
         info = self._get_info()
         
@@ -264,6 +364,57 @@ class DymonopolyEnv(gym.Env):
         self.current_player = 0
         
         return self._get_obs(), self._get_info()
+    
+    def game_end_cond(self):
+        bankrupt_players = 0
+        for i in range (self.num_players):
+            if self.players[i]["bankrupt"] == True:
+                bankrupt_players += 1
+
+        return (self.num_players <= bankrupt_players)
+        
+
+    def reward_function(self):
+        """Liquidity Reward
+            Volatility Penalty
+            Inequality Penalty
+            no.of turns"""
+        base_prices = np.asarray(getattr(self, "base_prices", np.ones(self.num_properties)), dtype=float)
+        current_prices = np.asarray(getattr(self, "current_prices", base_prices), dtype=float)
+        trading_freq = np.asarray(getattr(self, "trading_freq", np.zeros(self.num_properties)), dtype=float)
+        property_owners = np.asarray(getattr(self, "property_owners", np.full(self.num_properties, -1)))
+        player_cash = np.asarray(getattr(self, "player_cash", np.zeros(self.num_players)), dtype=float)
+
+        # 1) Liquidity reward (bounded 0-1)
+        avg_trades = np.mean(trading_freq) if trading_freq.size else 0.0
+        liquidity_score = np.tanh(avg_trades)
+
+        # 2) Volatility penalty based on deviation from baseline prices
+        safe_base = np.where(base_prices <= 0, 1.0, base_prices)
+        price_delta = np.abs(current_prices - base_prices) / safe_base
+        volatility_penalty = np.tanh(np.mean(price_delta))
+
+        # 3) Inequality penalty using wealth (cash + property values)
+        property_values = np.zeros(self.num_players, dtype=float)
+        for prop_id, owner in enumerate(property_owners):
+            if 0 <= owner < self.num_players:
+                property_values[int(owner)] += current_prices[prop_id]
+
+        wealth = player_cash + property_values
+        inequality_penalty = self._gini_coefficient(wealth)
+
+        # 4) Longevity bonus encourages longer survival
+        survival_bonus = np.tanh(self.turn_counter / 50.0)
+
+        reward = (
+            self.liquidity_weight * liquidity_score
+            - self.volatility_weight * volatility_penalty
+            - self.inequality_weight * inequality_penalty
+            + self.survival_weight * survival_bonus
+        )
+        return float(reward)
+
+
     
     def render(self):
         if self.render_mode == "human":
