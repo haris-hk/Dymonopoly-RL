@@ -1,7 +1,37 @@
+import os
 import pygame
 import numpy as np
 from rl import DymonopolyEnv
 import random
+
+
+class ActionButton:
+    """Simple rectangular button with enable/disable support."""
+
+    def __init__(self, rect, label, callback, base_color, enabled_getter=lambda: True):
+        self.rect = rect
+        self.label = label
+        self.callback = callback
+        self.base_color = base_color
+        self.enabled_getter = enabled_getter
+        self.dynamic_color = None
+
+    def is_enabled(self):
+        return self.enabled_getter()
+
+    def handle_click(self, pos):
+        if self.rect.collidepoint(pos) and self.is_enabled():
+            self.callback()
+            return True
+        return False
+
+    def draw(self, surface, font):
+        color = self.dynamic_color or self.base_color
+        color = color if self.is_enabled() else (160, 160, 160)
+        pygame.draw.rect(surface, color, self.rect, border_radius=6)
+        pygame.draw.rect(surface, (30, 30, 30), self.rect, 2, border_radius=6)
+        text = font.render(self.label, True, (0, 0, 0))
+        surface.blit(text, text.get_rect(center=self.rect.center))
 
 class MonopolyVisualizer:
     def __init__(self, env: DymonopolyEnv):
@@ -60,9 +90,26 @@ class MonopolyVisualizer:
 
         self.tiles = self._build_tiles()
         self.layout = self._calculate_layout()
-        self.player_positions = [0] * self.env.num_players
+        self.max_players = min(4, self.env.num_players)
+        self.env.num_players = self.max_players
+        self.player_positions = [0] * self.max_players
+        self.env.current_player = 0
+        self.env.turn_counter = 0
+
+        self.awaiting_roll = True
+        self.awaiting_decision = False
+        self.last_roll_total = None
+        self.last_dice = None
+        self.player_last_rolls = [None] * self.max_players
+        self.selected_tile = 0
+        self.message_log = ["Click 'Roll Dice' to begin"]
+
+        self.images_dir = os.path.join(os.path.dirname(__file__), "images")
+        self.board_surface = self._load_board_surface()
+        self.dice_images = self._load_dice_images()
 
         self.clock = pygame.time.Clock()
+        self.action_buttons = self._create_action_buttons()
     
     def _build_tiles(self):
         return [
@@ -182,6 +229,66 @@ class MonopolyVisualizer:
             }
 
         return layout
+
+    def _load_board_surface(self):
+        board_path = os.path.join(self.images_dir, "monopoly_board.jpg")
+        if os.path.exists(board_path):
+            board_img = pygame.image.load(board_path).convert()
+            return pygame.transform.smoothscale(board_img, (self.board_size, self.board_size))
+
+        fallback = pygame.Surface((self.board_size, self.board_size))
+        fallback.fill((240, 240, 240))
+        pygame.draw.rect(fallback, (50, 50, 50), fallback.get_rect(), 6)
+        return fallback
+
+    def _load_dice_images(self):
+        value_map = {
+            1: "one",
+            2: "two",
+            3: "three",
+            4: "four",
+            5: "five",
+            6: "six",
+        }
+        images = {}
+        for value, name in value_map.items():
+            file_path = os.path.join(self.images_dir, f"dice-six-faces-{name}.png")
+            if os.path.exists(file_path):
+                img = pygame.image.load(file_path).convert_alpha()
+                images[value] = pygame.transform.smoothscale(img, (44, 44))
+            else:
+                surface = pygame.Surface((44, 44))
+                surface.fill((255, 255, 255))
+                pygame.draw.rect(surface, (0, 0, 0), surface.get_rect(), 2)
+                label = self.font_medium.render(str(value), True, (0, 0, 0))
+                surface.blit(label, label.get_rect(center=surface.get_rect().center))
+                images[value] = surface
+        return images
+
+    def _create_action_buttons(self):
+        buttons = []
+        button_width = self.info_rect.width - 32
+        button_height = 44
+        start_x = self.info_rect.left + 16
+        start_y = self.info_rect.bottom - (button_height + 12) * 5 - 160
+
+        specs = [
+            ("Roll Dice", self._handle_roll, lambda: self.awaiting_roll, (76, 175, 80)),
+            ("Buy Property", self._handle_buy, lambda: self.awaiting_decision, (65, 105, 225)),
+            ("Skip Buying", self._handle_skip, lambda: self.awaiting_decision, (189, 189, 189)),
+            ("Build House", self._handle_build, lambda: True, (255, 193, 7)),
+            ("Sell House", self._handle_sell, lambda: True, (233, 30, 99)),
+        ]
+
+        for idx, (label, callback, enabled_fn, color) in enumerate(specs):
+            rect = pygame.Rect(
+                start_x,
+                start_y + idx * (button_height + 12),
+                button_width,
+                button_height,
+            )
+            buttons.append(ActionButton(rect, label, callback, color, enabled_fn))
+        return buttons
     
     def _wrap_text(self, text, font, max_width):
         words = text.split()
@@ -198,6 +305,10 @@ class MonopolyVisualizer:
         if current:
             lines.append(" ".join(current))
         return lines if lines else [""]
+
+    def _push_message(self, text):
+        self.message_log.append(text)
+        self.message_log = self.message_log[-5:]
 
     def _price_tint(self, index):
         base = self.env.base_prices[index]
@@ -250,6 +361,17 @@ class MonopolyVisualizer:
         rotated = pygame.transform.rotate(surface, angle)
         rotated_rect = rotated.get_rect(center=rect.center)
         self.screen.blit(rotated, rotated_rect.topleft)
+
+        if index == self.selected_tile:
+            pygame.draw.rect(self.screen, (255, 215, 0), rotated_rect, 4)
+
+    def _draw_highlight(self):
+        layout = self.layout[self.selected_tile]
+        highlight_rect = layout["rect"]
+        overlay = pygame.Surface(highlight_rect.size, pygame.SRCALPHA)
+        overlay.fill((255, 215, 0, 60))
+        self.screen.blit(overlay, highlight_rect.topleft)
+        pygame.draw.rect(self.screen, (255, 215, 0), highlight_rect, 3)
 
     def _draw_standard_surface(self, surface, tile, index):
         rect = surface.get_rect()
@@ -379,14 +501,11 @@ class MonopolyVisualizer:
             pygame.draw.polygon(surface, (220, 40, 40), [(rect.width - 20, rect.height - 60), (rect.width - 40, rect.height - 70), (rect.width - 40, rect.height - 50)])
     
     def render_board(self):
-        """Render the beautiful connected Monopoly board"""
-        self.screen.fill((240, 240, 240))
-        pygame.draw.rect(self.screen, self.WHITE, self.board_rect)
+        self.screen.fill((22, 24, 29))
+        self.screen.blit(self.board_surface, self.board_rect.topleft)
         pygame.draw.rect(self.screen, self.BOARD_EDGE, self.board_rect, 6)
 
-        self._draw_centerpieces()
-        for idx in range(40):
-            self._draw_tile(idx)
+        self._draw_highlight()
         self._draw_players()
         self._draw_info_panel()
         pygame.display.flip()
@@ -396,7 +515,7 @@ class MonopolyVisualizer:
         return palette[player_id % len(palette)]
     
     def _draw_players(self):
-        for pid in range(self.env.num_players):
+        for pid in range(self.max_players):
             tile_index = self.player_positions[pid]
             layout = self.layout[tile_index]
             rect = layout["rect"]
@@ -453,139 +572,233 @@ class MonopolyVisualizer:
         self.screen.blit(chance_surface, chance_surface.get_rect(center=(self.board_rect.centerx + 140, self.board_rect.centery - 100)))
 
     def _draw_info_panel(self):
-        pygame.draw.rect(self.screen, (245, 245, 245), self.info_rect)
+        pygame.draw.rect(self.screen, (248, 248, 248), self.info_rect)
         pygame.draw.rect(self.screen, self.BLACK, self.info_rect, 3)
 
-        x = self.info_rect.left + 16
+        x = self.info_rect.left + 18
         y = self.info_rect.top + 20
 
-        title = self.font_large.render("Market", True, self.BLACK)
+        title = self.font_large.render("Player Console", True, self.BLACK)
         self.screen.blit(title, (x, y))
         y += 36
 
-        turn_text = self.font_stats.render(f"Turn: {self.env.turn_counter}", True, self.BLACK)
+        current_player = self.env.current_player % self.max_players
+        turn_text = self.font_stats.render(f"Current Player: P{current_player + 1}", True, self.BLACK)
         self.screen.blit(turn_text, (x, y))
+        y += 24
+
+        cash = int(self.env.player_cash[current_player])
+        self.screen.blit(self.font_stats.render(f"Money: ${cash}", True, (20, 120, 20)), (x, y))
+        y += 24
+
+        if self.last_dice:
+            roll_label = f"Roll: {self.last_dice[0]} + {self.last_dice[1]} = {self.last_roll_total}"
+        else:
+            roll_label = "Roll: --"
+        self.screen.blit(self.font_stats.render(roll_label, True, self.BLACK), (x, y))
+        y += 24
+
+        owned_props = [tile["name"] for idx, tile in enumerate(self.tiles) if self.env.property_owners[idx] == current_player]
+        self.screen.blit(self.font_medium.render("Owned Properties", True, self.BLACK), (x, y))
+        y += 24
+        if owned_props:
+            lines = self._wrap_text(
+                ", ".join(owned_props),
+                self.font_stats,
+                self.info_rect.width - 36,
+            )
+            for line in lines:
+                self.screen.blit(self.font_stats.render(line, True, (60, 60, 60)), (x, y))
+                y += 20
+        else:
+            self.screen.blit(self.font_stats.render("-", True, (120, 120, 120)), (x, y))
+            y += 22
+
+        tile = self.tiles[self.selected_tile]
+        self.screen.blit(self.font_medium.render("Tile Details", True, self.BLACK), (x, y))
+        y += 24
+        self.screen.blit(self.font_stats.render(tile["name"], True, self.BLACK), (x, y))
+        y += 22
+        tile_type = tile.get("type", "?").replace("_", " ").title()
+        self.screen.blit(self.font_stats.render(f"Type: {tile_type}", True, (70, 70, 70)), (x, y))
+        y += 20
+
+        price_text = tile.get("price")
+        if price_text:
+            self.screen.blit(
+                self.font_stats.render(f"Price: ${price_text}", True, (70, 70, 70)),
+                (x, y),
+            )
+            y += 20
+
+        owner = self.env.property_owners[self.selected_tile]
+        owner_text = "Unowned" if owner < 0 else f"Owned by P{owner + 1}"
+        owner_color = (90, 90, 90) if owner < 0 else self._get_player_color(owner)
+        self.screen.blit(self.font_stats.render(owner_text, True, owner_color), (x, y))
         y += 28
 
-        if self.env.turn_counter % self.env.price_update_interval == 0 and self.env.turn_counter > 0:
-            notice = self.font_stats.render("Prices refreshed!", True, (200, 0, 0))
-        else:
-            remaining = self.env.price_update_interval - (self.env.turn_counter % self.env.price_update_interval)
-            notice = self.font_stats.render(f"Next update in {remaining}", True, (90, 90, 90))
-        self.screen.blit(notice, (x, y))
-        y += 34
+        y = self._draw_dice_history_section(x, y)
 
-        avg_price = np.mean(self.env.current_prices)
-        avg_base = np.mean(self.env.base_prices)
-        change_pct = (avg_price / avg_base - 1.0) * 100 if avg_base else 0
-        avg_text = self.font_stats.render(f"Avg price: ${avg_price:.0f}", True, self.BLACK)
-        pct_text = self.font_stats.render(f"Change: {change_pct:+.1f}%", True, (0, 120, 0) if change_pct >= 0 else (180, 0, 0))
-        self.screen.blit(avg_text, (x, y))
+        self._draw_action_buttons()
+        self._draw_message_log()
+
+    def _draw_action_buttons(self):
+        sell_button = next((b for b in self.action_buttons if b.label == "Sell House"), None)
+        if sell_button:
+            owner = self.env.property_owners[self.selected_tile]
+            sell_button.dynamic_color = self._get_player_color(owner) if owner >= 0 else None
+
+        if self.action_buttons:
+            heading_pos = (self.action_buttons[0].rect.left, self.action_buttons[0].rect.top - 28)
+            heading = self.font_medium.render("Move Options", True, self.BLACK)
+            self.screen.blit(heading, heading_pos)
+
+        for button in self.action_buttons:
+            button.draw(self.screen, self.font_medium)
+
+    def _draw_message_log(self):
+        footer_height = 120
+        footer_rect = pygame.Rect(
+            self.info_rect.left + 16,
+            self.info_rect.bottom - footer_height - 10,
+            self.info_rect.width - 32,
+            footer_height,
+        )
+        pygame.draw.rect(self.screen, (255, 255, 255), footer_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (30, 30, 30), footer_rect, 2, border_radius=8)
+        y = footer_rect.top + 8
+        self.screen.blit(self.font_medium.render("Activity Log", True, self.BLACK), (footer_rect.left + 10, y))
         y += 26
-        self.screen.blit(pct_text, (x, y))
-        y += 30
+        for msg in reversed(self.message_log):
+            msg_text = self.font_stats.render(msg, True, (60, 60, 60))
+            self.screen.blit(msg_text, (footer_rect.left + 10, y))
+            y += 20
 
-        trades = int(np.sum(self.env.trading_freq))
-        trades_text = self.font_stats.render(f"Trades: {trades}", True, self.BLACK)
-        self.screen.blit(trades_text, (x, y))
-        y += 32
+    def _draw_dice_history_section(self, start_x, start_y):
+        section_title = self.font_medium.render("Dice Rolls", True, self.BLACK)
+        self.screen.blit(section_title, (start_x, start_y))
+        y = start_y + 28
+        row_height = 54
+        for pid in range(self.max_players):
+            row_label = self.font_stats.render(f"P{pid + 1}", True, self.BLACK)
+            self.screen.blit(row_label, (start_x, y))
+            dice = self.player_last_rolls[pid]
+            if dice:
+                for idx, value in enumerate(dice):
+                    dice_img = self.dice_images.get(value)
+                    if dice_img:
+                        self.screen.blit(dice_img, (start_x + 70 + idx * 52, y - 6))
+                total = sum(dice)
+                total_text = self.font_stats.render(f"= {total}", True, (60, 60, 60))
+                self.screen.blit(total_text, (start_x + 70 + 2 * 52 + 20, y + 6))
+            else:
+                placeholder = self.font_stats.render("--", True, (150, 150, 150))
+                self.screen.blit(placeholder, (start_x + 70, y))
+            y += row_height
+        return y
 
-        self.screen.blit(self.font_medium.render("Players", True, self.BLACK), (x, y))
-        y += 26
+    def _handle_button_click(self, pos):
+        for button in self.action_buttons:
+            if button.handle_click(pos):
+                break
 
-        for pid in range(self.env.num_players):
-            color = self._get_player_color(pid)
-            pygame.draw.circle(self.screen, color, (x + 12, y + 10), 9)
-            pygame.draw.circle(self.screen, self.BLACK, (x + 12, y + 10), 9, 2)
-            cash = int(self.env.player_cash[pid])
-            owned = int(np.sum(self.env.property_owners == pid))
-            summary = self.font_stats.render(f"P{pid + 1}: ${cash} ({owned})", True, self.BLACK)
-            self.screen.blit(summary, (x + 28, y))
-            y += 28
-
-    def _simulate_dice_roll(self):
-        dice_total = random.randint(1, 6) + random.randint(1, 6)
-        current_player = self.env.current_player
+    def _handle_roll(self):
+        if not self.awaiting_roll:
+            return
+        die_one = random.randint(1, 6)
+        die_two = random.randint(1, 6)
+        dice_total = die_one + die_two
+        self.last_roll_total = dice_total
+        self.last_dice = (die_one, die_two)
+        current_player = self.env.current_player % self.max_players
+        self.player_last_rolls[current_player] = self.last_dice
         new_position = (self.player_positions[current_player] + dice_total) % len(self.tiles)
         self.player_positions[current_player] = new_position
-        self.env.visiting_freq[new_position] += 1
-        return new_position
+        self.selected_tile = new_position
+        tile = self.tiles[new_position]
+        self._push_message(f"P{current_player + 1} rolled {dice_total} and landed on {tile['name']}")
+        self.awaiting_roll = False
+        self.awaiting_decision = True
 
-    def _simulate_action(self, tile_index):
-        tile = self.tiles[tile_index]
-        current_player = self.env.current_player
-        action = 0
+    def _handle_buy(self):
+        if not self.awaiting_decision:
+            return
+        tile = self.tiles[self.selected_tile]
+        current_player = self.env.current_player % self.max_players
+        if tile["type"] not in {"property", "railroad", "utility"}:
+            self._push_message("Nothing to buy on this tile.")
+            return
 
-        if tile["type"] in {"property", "railroad", "utility"}:
-            price = float(self.env.current_prices[tile_index])
-            owner = self.env.property_owners[tile_index]
+        owner = self.env.property_owners[self.selected_tile]
+        if owner >= 0 and owner != current_player:
+            self._push_message(f"Already owned by P{owner + 1}.")
+            return
 
-            if owner == -1 and self.env.player_cash[current_player] >= price:
-                if random.random() < 0.65:
-                    action = 1
-                    self.env.player_cash[current_player] -= price
-                    self.env.property_owners[tile_index] = current_player
-                    self.env.trading_freq[tile_index] += 1
-            elif owner == current_player and random.random() < 0.12:
-                action = 2
-                sale_price = price * 0.85
-                self.env.player_cash[current_player] += sale_price
-                self.env.property_owners[tile_index] = -1
-                self.env.trading_freq[tile_index] += 1
+        price = tile.get("price", 0)
+        if owner == current_player:
+            self._push_message("You already own this property.")
+            return
 
-        self.env.current_player = (self.env.current_player + 1) % self.env.num_players
-        return action
-    
-    def run(self, num_steps=200):
-        """Run visualization with proper game simulation"""
+        if price and self.env.player_cash[current_player] < price:
+            self._push_message("Not enough cash to buy this property.")
+            return
+
+        if price:
+            self.env.player_cash[current_player] -= price
+        self.env.property_owners[self.selected_tile] = current_player
+        self._push_message(f"P{current_player + 1} bought {tile['name']} for ${price}.")
+        self._end_turn()
+
+    def _handle_skip(self):
+        if not self.awaiting_decision:
+            return
+        tile = self.tiles[self.selected_tile]
+        current_player = self.env.current_player % self.max_players
+        self._push_message(f"P{current_player + 1} skips buying {tile['name']}")
+        self._end_turn()
+
+    def _handle_build(self):
+        current_player = self.env.current_player % self.max_players
+        self._push_message(f"P{current_player + 1} selected Build House (logic pending)")
+
+    def _handle_sell(self):
+        current_player = self.env.current_player % self.max_players
+        owner = self.env.property_owners[self.selected_tile]
+        tile = self.tiles[self.selected_tile]
+        if owner == current_player:
+            self.env.property_owners[self.selected_tile] = -1
+            refund = (tile.get("price", 0) or 0) // 2
+            self.env.player_cash[current_player] += refund
+            self._push_message(f"P{current_player + 1} sells {tile['name']} for ${refund}.")
+        elif owner >= 0:
+            self._push_message(f"Only P{owner + 1} can sell this property.")
+        else:
+            self._push_message("No owner registered on this tile.")
+
+    def _end_turn(self):
+        self.awaiting_roll = True
+        self.awaiting_decision = False
+        self.env.current_player = (self.env.current_player + 1) % self.max_players
+        self.env.turn_counter += 1
+
+    def run(self):
+        """Launch interactive UI for up to four players."""
         running = True
-        step = 0
-        paused = False
-        
-        print("Controls:")
-        print("  SPACE - Pause/Resume")
-        print("  RIGHT ARROW - Step one turn (when paused)")
-        print("  ESC - Quit")
-        
-        while running and step < num_steps:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key == pygame.K_SPACE:
-                        paused = not paused
-                        print("Paused" if paused else "Resumed")
-                    elif event.key == pygame.K_RIGHT and paused:
-                        # Manual step when paused
-                        self._take_turn()
-                        step += 1
-            
-            if not paused:
-                # Auto-play
-                self._take_turn()
-                step += 1
-            
-            self.render_board()
-            self.clock.tick(3 if not paused else 30)  # 3 FPS when running, 30 when paused
-        
-        print(f"\nSimulation complete! {step} turns played.")
-        print("Close the window to exit.")
-        
-        # Keep window open
+        print("Controls:\n  - Left click buttons to trigger actions\n  - ESC closes the window")
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-        
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self._handle_button_click(event.pos)
+
+            self.render_board()
+            self.clock.tick(60)
+
         pygame.quit()
-    
-    def _take_turn(self):
-        """Execute one complete turn"""
-        tile_index = self._simulate_dice_roll()
-        action = self._simulate_action(tile_index)
-        self.env.step(action)
 
 # Usage example
 if __name__ == "__main__":
@@ -595,4 +808,4 @@ if __name__ == "__main__":
     
     print("Starting visualization...")
     visualizer = MonopolyVisualizer(env)
-    visualizer.run(num_steps=200)
+    visualizer.run()

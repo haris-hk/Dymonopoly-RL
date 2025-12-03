@@ -202,20 +202,22 @@ class DymonopolyEnv(gym.Env):
         
         # Observation space: property prices, ownership, player positions, cash, etc.
         self.observation_space = spaces.Dict({
-            "property_prices": spaces.Box(low=0, high=np.inf, shape=(num_properties,)),
-            "property_owners": spaces.Box(low=-1, high=num_players-1, shape=(num_properties,)),
-            "visiting_frequency": spaces.Box(low=0, high=np.inf, shape=(num_properties,)),
-            "trading_frequency": spaces.Box(low=0, high=np.inf, shape=(num_properties,)),
-            "player_cash": spaces.Box(low=0, high=np.inf, shape=(num_players,)),
+            "property_prices": spaces.Box(low=0, high=1e6, shape=(num_properties,), dtype=np.float32),
+            "property_owners": spaces.Box(low=-1, high=num_players-1, shape=(num_properties,), dtype=np.float32),
+            "visiting_frequency": spaces.Box(low=0, high=1e6, shape=(num_properties,), dtype=np.float32),
+            "trading_frequency": spaces.Box(low=0, high=1e6, shape=(num_properties,), dtype=np.float32),
+            "player_cash": spaces.Box(low=0, high=1e8, shape=(num_players,), dtype=np.float32),
             "current_player": spaces.Discrete(num_players)
         })
         
-        # Action space: buy, sell, trade, pass
+        # Action space: normalized to [-1, 1] for SAC stability
+        # Will be rescaled in step() to [0.4, 2.0] price multipliers
         self.action_space = spaces.Box(
-            low=0.8,  # can decrease by 20%
-            high=1.2,  # can increase by 20%
-            shape=(num_properties,)  # one multiplier per property
-)
+            low=-1.0,
+            high=1.0,
+            shape=(num_properties,),
+            dtype=np.float32
+        )
 
 
         
@@ -299,9 +301,9 @@ class DymonopolyEnv(gym.Env):
             
             # Single owner with <50%: neutral (no change to score)
         
-            # Average competition across all color groups
-            avg_competition = total_competition_score / len(color_groups)
-            return float(avg_competition)
+        # Average competition across all color groups
+        avg_competition = total_competition_score / len(color_groups)
+        return float(avg_competition)
 
     
     def _roll_dice(self):
@@ -310,7 +312,7 @@ class DymonopolyEnv(gym.Env):
 
     def step(self, action):
         """
-        Action: array of price multipliers (0.8-1.2) for each property
+        Action: array in [-1, 1] rescaled to price multipliers [0.4, 2.0]
         Every 5 turns: apply price adjustments and calculate reward
         """
         self.turn_counter += 1
@@ -365,8 +367,10 @@ class DymonopolyEnv(gym.Env):
                 if self.base_prices[prop_id] == 0:  # Skip non-ownable
                     continue
                 
-                # Apply RL bot's price adjustment
-                multiplier = np.clip(action[prop_id], 0.8, 1.2)
+                # Rescale action from [-1, 1] to [0.4, 2.0]
+                # Formula: multiplier = 1.2 + 0.8 * action  (-1 -> 0.4, 0 -> 1.2, +1 -> 2.0)
+                raw_action = np.clip(action[prop_id], -1.0, 1.0)
+                multiplier = 1.2 + 0.8 * raw_action
                 self.current_prices[prop_id] *= multiplier
                 
                 # Keep prices reasonable (50%-200% of baseline)
@@ -403,6 +407,11 @@ class DymonopolyEnv(gym.Env):
         return self._get_obs(), self._get_info()
     
     def game_end_cond(self):
+        # End after max turns to prevent infinite episodes
+        MAX_TURNS = 500
+        if self.turn_counter >= MAX_TURNS:
+            return True
+        
         bankrupt_players = 0
         for i in range(self.num_players):
             if self.players[i][0]["bankrupt"] == True:  # Fixed indexing
@@ -412,6 +421,7 @@ class DymonopolyEnv(gym.Env):
         if bankrupt_players >= self.num_players - 1:
             return True
         
+        return False  # Game continues
 
     
     def _market_depth_reward(self):
