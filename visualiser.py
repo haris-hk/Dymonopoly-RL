@@ -1,9 +1,45 @@
 import os
 import pygame
 import numpy as np
-from rl import DymonopolyEnv
+from rl import DymonopolyEnv, DymonopolyDecisionEnv
 import random
+from gymnasium import spaces
 
+# Try to import SAC model components (optional - for market pricing)
+try:
+    from stable_baselines3 import SAC
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+    from gymnasium.wrappers import FlattenObservation
+    SAC_AVAILABLE = True
+except ImportError as e:
+    print(f"[Market Model] SAC not available: {e}")
+    SAC_AVAILABLE = False
+except OSError as e:
+    print(f"[Market Model] SAC loading error (possibly PyTorch DLL issue): {e}")
+    SAC_AVAILABLE = False
+
+# Game states
+class GameState:
+    AWAITING_ROLL = "awaiting_roll"
+    AWAITING_DECISION = "awaiting_decision"  # After landing, can buy/build/sell/skip
+    AWAITING_TILE_SELECT = "awaiting_tile_select"  # Selecting tile for build/sell
+    GAME_OVER = "game_over"
+
+chance_cards = [
+    {"type": "money", "amount": 200, "text": "Bank error in your favour. Collect £200."},
+    {"type": "money", "amount": -100, "text": "Pay speeding fine of £100."},
+    {"type": "move", "target": 0, "text": "Advance to Go. Collect £200."},
+    {"type": "go_to_jail", "text": "Go directly to Jail. Do not pass Go, do not collect £200."},
+    {"type": "jail_card", "text": "Get Out of Jail Free. This card may be kept until needed or sold."},
+]
+
+chest_cards = [
+    {"type": "money", "amount": 150, "text": "Your building loan matures. Collect £150."},
+    {"type": "money", "amount": -50, "text": "Doctor's fees. Pay £50."},
+    {"type": "money", "amount": 100, "text": "Life insurance matures. Collect £100."},
+    {"type": "go_to_jail", "text": "Go directly to Jail. Do not pass Go, do not collect £200."},
+    {"type": "jail_card", "text": "Get Out of Jail Free. This card may be kept until needed or sold."},
+]
 
 class ActionButton:
     """Simple rectangular button with enable/disable support."""
@@ -34,13 +70,26 @@ class ActionButton:
         surface.blit(text, text.get_rect(center=self.rect.center))
 
 class MonopolyVisualizer:
-    def __init__(self, env: DymonopolyEnv):
+    def __init__(self, env=None):
         pygame.init()
-        self.env = env
+        
+        # Support both env types - prefer DymonopolyDecisionEnv
+        if env is None:
+            self.env = DymonopolyDecisionEnv(num_players=2)
+            self.env.reset()
+            self.using_decision_env = True
+        elif isinstance(env, DymonopolyDecisionEnv):
+            self.env = env
+            self.using_decision_env = True
+        else:
+            # Legacy DymonopolyEnv support
+            self.env = env
+            self.using_decision_env = False
+        
         self.width = 1100
         self.height = 780
         self.screen = pygame.display.set_mode((self.width, self.height))
-        pygame.display.set_caption("Dymonopoly - Market Board")
+        pygame.display.set_caption("Dymonopoly - Human vs AI")
 
         self.corner_size = 100
         self.edge_size = 58
@@ -88,31 +137,49 @@ class MonopolyVisualizer:
         self.font_price = pygame.font.SysFont("arial", 14)
         self.font_banner = pygame.font.SysFont("arial", 80, bold=True)
         self.font_stats = pygame.font.SysFont("arial", 18)
+        self.font_house_num = pygame.font.SysFont("arial", 12, bold=True)
 
         self.tiles = self._build_tiles()
         self.layout = self._calculate_layout()
-        self.max_players = min(4, self.env.num_players)
-        self.env.num_players = self.max_players
-        self.player_positions = [0] * self.max_players
-        self.env.current_player = 0
-        self.env.turn_counter = 0
+        self.max_players = 2  # Human vs AI
+        
+        # For DecisionEnv compatibility
+        if self.using_decision_env:
+            self.player_positions = self.env.player_positions.tolist()
+        else:
+            self.env.num_players = self.max_players
+            self.player_positions = [0] * self.max_players
+            self.env.current_player = 0
+            self.env.turn_counter = 0
 
         self.collision_offsets = {}
-        # example nudges: move top row a few px left, right column a few px up+       for i in range(21, 30):   # top row tiles 21..29
         for i in range(21, 30):   # top row tiles 21..29
             self.collision_offsets[i] = (20, 0)
         for i in range(31, 40):   # right column tiles 31..39
             self.collision_offsets[i] = (0, 20)
 
+        # Game state machine
+        self.game_state = GameState.AWAITING_ROLL
+        self.pending_action_type = None  # "build" or "sell_building" or "sell_property"
+        
+        # Legacy state vars (for compatibility)
         self.awaiting_roll = True
         self.awaiting_decision = False
         self.last_roll_total = None
         self.last_dice = None
         self.player_last_rolls = [None] * self.max_players
         self.selected_tile = 0
-        self.message_log = ["Click 'Roll Dice' to begin"]
-        self.show_property_card = False  # Flag to show property card
-        self.last_clicked_property = None  # Stores the name of the last clicked property
+        self.message_log = ["Player 1 (Human) - Click 'Roll Dice' to begin"]
+        self.show_property_card = False
+        self.last_clicked_property = None
+        self.show_event_card = False
+        self.current_event_card = None
+        self.current_event_type = None
+        
+        # Buildable/Sellable lists for current player
+        self.buildable_tiles = []
+        self.sellable_building_tiles = []
+        self.sellable_property_tiles = []
 
         self.images_dir = os.path.join(os.path.dirname(__file__), "images")
         self.board_surface = self._load_board_surface()
@@ -121,7 +188,173 @@ class MonopolyVisualizer:
         self.clock = pygame.time.Clock()
         self.action_buttons = self._create_action_buttons()
         self.sell_count = 0  # Counter for sell building
+        
+        # ========== MARKET PRICE OVERLAY ==========
+        self.show_market_overlay = False
+        self.market_overlay_start_time = 0
+        self.market_overlay_duration = 15000  # 15 seconds
+        self.market_price_changes = []  # Store price changes for overlay
+        
+        # ========== MARKET PRICE MODEL (SAC) ==========
+        # Load trained SAC model for dynamic market pricing
+        self.market_model = None
+        self.market_vec_normalize = None
+        self.market_update_interval = 5  # Update prices every 5 turns
+        self.base_prices = self._get_base_prices()  # Store original prices
+        
+        if SAC_AVAILABLE:
+            model_path = os.path.join(os.path.dirname(__file__), "models", "last_model.zip")
+            normalize_path = os.path.join(os.path.dirname(__file__), "models", "vec_normalize.pkl")
+            
+            if os.path.exists(model_path):
+                try:
+                    # Create dummy env for VecNormalize loading
+                    self.market_model = SAC.load(model_path, device="cpu")
+                    if os.path.exists(normalize_path):
+                        # Load the VecNormalize stats
+                        self.market_vec_normalize = VecNormalize.load(normalize_path, DummyVecEnv([self._make_dummy_market_env]))
+                        self.market_vec_normalize.training = False
+                        self.market_vec_normalize.norm_reward = False
+                    print("[Market Model] SAC model loaded successfully!")
+                except Exception as e:
+                    print(f"[Market Model] Failed to load: {e}")
+                    self.market_model = None
+            else:
+                print(f"[Market Model] Model not found at {model_path}")
+        else:
+            print("[Market Model] SAC not available - market prices will remain static")
     
+    def _make_dummy_market_env(self):
+        """Create a dummy market env for VecNormalize compatibility."""
+        if not SAC_AVAILABLE:
+            return None
+        env = DymonopolyEnv(num_properties=40, num_players=4)
+        env = FlattenObservation(env)
+        return env
+    
+    def _get_base_prices(self):
+        """Extract base prices from tiles (for price multiplier reference)."""
+        prices = np.zeros(40, dtype=np.float32)
+        for i, tile in enumerate(self.tiles):
+            if "price" in tile:
+                prices[i] = tile["price"]
+        return prices
+    
+    def _get_market_observation(self):
+        """Build observation dict matching DymonopolyEnv format for SAC model."""
+        num_properties = 40
+        num_players = self.max_players
+        
+        # Property prices (current)
+        property_prices = np.zeros(num_properties, dtype=np.float32)
+        for i, tile in enumerate(self.tiles):
+            if "price" in tile:
+                property_prices[i] = tile["price"]
+        
+        # Property owners
+        property_owners = np.full(num_properties, -1, dtype=np.float32)
+        if self.using_decision_env:
+            for i in range(num_properties):
+                property_owners[i] = self.env.property_owner[i]
+        else:
+            for i, tile in enumerate(self.tiles):
+                property_owners[i] = tile.get("owned_by", -1)
+        
+        # Visiting frequency
+        visiting_freq = np.zeros(num_properties, dtype=np.float32)
+        for i, tile in enumerate(self.tiles):
+            visiting_freq[i] = tile.get("visiting_freq", 0)
+        
+        # Trading frequency
+        trading_freq = np.zeros(num_properties, dtype=np.float32)
+        for i, tile in enumerate(self.tiles):
+            trading_freq[i] = tile.get("trading_frequency", 0)
+        
+        # Player cash
+        player_cash = np.zeros(num_players, dtype=np.float32)
+        if self.using_decision_env:
+            player_cash = self.env.player_cash.astype(np.float32)
+        else:
+            for i in range(num_players):
+                player_cash[i] = 1500  # default
+        
+        # Current player
+        current_player = self.env.current_player if hasattr(self.env, 'current_player') else 0
+        
+        return {
+            "property_prices": property_prices,
+            "property_owners": property_owners,
+            "visiting_frequency": visiting_freq,
+            "trading_frequency": trading_freq,
+            "player_cash": player_cash,
+            "current_player": current_player
+        }
+    
+    def _flatten_observation(self, obs_dict):
+        """Flatten observation dict to match FlattenObservation wrapper."""
+        # Order must match spaces.Dict ordering (alphabetical by key)
+        # current_player, player_cash, property_owners, property_prices, trading_frequency, visiting_frequency
+        parts = []
+        
+        # current_player as one-hot (4 players in training)
+        current_player_onehot = np.zeros(4, dtype=np.float32)
+        current_player_onehot[min(obs_dict["current_player"], 3)] = 1.0
+        parts.append(current_player_onehot)
+        
+        # player_cash (pad to 4 players)
+        player_cash = np.zeros(4, dtype=np.float32)
+        player_cash[:len(obs_dict["player_cash"])] = obs_dict["player_cash"]
+        parts.append(player_cash)
+        
+        parts.append(obs_dict["property_owners"])
+        parts.append(obs_dict["property_prices"])
+        parts.append(obs_dict["trading_frequency"])
+        parts.append(obs_dict["visiting_frequency"])
+        
+        return np.concatenate(parts).astype(np.float32)
+    
+    def _update_market_prices(self):
+        """Use SAC model to update property prices based on market conditions."""
+        if self.market_model is None:
+            return
+        
+        # Get observation
+        obs_dict = self._get_market_observation()
+        obs_flat = self._flatten_observation(obs_dict)
+        
+        # Normalize if VecNormalize is available
+        if self.market_vec_normalize is not None:
+            obs_flat = self.market_vec_normalize.normalize_obs(obs_flat)
+        
+        # Get action from model (deterministic)
+        action, _ = self.market_model.predict(obs_flat, deterministic=True)
+        
+        # Convert action [-1, 1] to price multipliers [0.4, 2.0]
+        # Formula from rl.py: multiplier = 1.2 + 0.8 * action
+        multipliers = 1.2 + 0.8 * action
+        
+        # Apply multipliers to base prices
+        price_changes = []
+        for i, tile in enumerate(self.tiles):
+            if "price" in tile and self.base_prices[i] > 0:
+                old_price = tile["price"]
+                new_price = int(self.base_prices[i] * multipliers[i])
+                # Clamp to reasonable range
+                new_price = max(10, min(new_price, int(self.base_prices[i] * 3)))
+                
+                if new_price != old_price:
+                    change = new_price - old_price
+                    change_pct = ((new_price / old_price) - 1) * 100
+                    price_changes.append((tile["name"], old_price, new_price, change_pct))
+                    tile["price"] = new_price
+        
+        # Show market overlay with price changes
+        if price_changes:
+            # Sort by absolute percentage change and take top changes
+            self.market_price_changes = sorted(price_changes, key=lambda x: abs(x[3]), reverse=True)[:8]
+            self.show_market_overlay = True
+            self.market_overlay_start_time = pygame.time.get_ticks()
+
     def _build_tiles(self):
         return [
     {"name": "GO", "type": "corner", "corner": "go"},
@@ -284,12 +517,32 @@ class MonopolyVisualizer:
         # Position buttons after Dice Rolls and Current Tile sections
         start_y = self.info_rect.top + 420
 
+        # Button enabled conditions
+        def can_roll():
+            return self.game_state == GameState.AWAITING_ROLL
+        
+        def can_buy():
+            return self.game_state == GameState.AWAITING_DECISION and self._can_buy_current_tile()
+        
+        def can_skip():
+            return self.game_state == GameState.AWAITING_DECISION
+        
+        def can_build():
+            return self.game_state == GameState.AWAITING_DECISION and len(self._get_buildable_tiles()) > 0
+        
+        def can_sell_building():
+            return self.game_state == GameState.AWAITING_DECISION and len(self._get_sellable_building_tiles()) > 0
+        
+        def can_sell_property():
+            return self.game_state == GameState.AWAITING_DECISION and len(self._get_sellable_property_tiles()) > 0
+
         specs = [
-            ("Roll Dice", self._handle_roll, lambda: self.awaiting_roll, (76, 175, 80)),  # Green
-            ("Buy", self._handle_buy, lambda: self.awaiting_decision, (100, 149, 237)),  # Blue
-            ("Skip", self._handle_skip, lambda: self.awaiting_decision, (189, 189, 189)),  # Gray
-            ("Build", self._handle_build, lambda: True, (76, 175, 80)),  # Green
-            ("Sell Property", self._handle_sell_property, lambda: True, (255, 165, 0)),  # Orange
+            ("Roll Dice", self._handle_roll, can_roll, (76, 175, 80)),  # Green
+            ("Buy", self._handle_buy, can_buy, (100, 149, 237)),  # Blue
+            ("End Turn", self._handle_skip, can_skip, (220, 60, 60)),  # Red when enabled
+            ("Build House", self._handle_build, can_build, (76, 175, 80)),  # Green
+            ("Sell Building", self._handle_sell_building, can_sell_building, (210, 180, 140)),  # Tan
+            ("Sell Property", self._handle_sell_property_btn, can_sell_property, (255, 165, 0)),  # Orange
         ]
 
         for idx, (label, callback, enabled_fn, color) in enumerate(specs):
@@ -301,13 +554,69 @@ class MonopolyVisualizer:
             )
             buttons.append(ActionButton(rect, label, callback, color, enabled_fn))
         
-        # Sell Building button with counter (special layout)
-        # Position it after the regular specs so it appears below them vertically
-        sell_y = start_y + len(specs) * (button_height + 5)
-        sell_rect = pygame.Rect(start_x, sell_y, button_width - 90, button_height)
-        buttons.append(ActionButton(sell_rect, "Sell Building", self._handle_sell, (210, 180, 140), lambda: True))
-        
         return buttons
+    
+    # Helper methods for game logic
+    def _get_current_player(self):
+        """Get current player index."""
+        if self.using_decision_env:
+            return self.env.current_player
+        else:
+            return self.env.current_player % self.max_players
+    
+    def _get_player_cash(self, player_id):
+        """Get player's cash."""
+        if self.using_decision_env:
+            return self.env.player_cash[player_id]
+        else:
+            return self.env.player_cash[player_id] if hasattr(self.env, 'player_cash') else 1500
+    
+    def _get_property_owner(self, tile_idx):
+        """Get property owner."""
+        if self.using_decision_env:
+            return self.env.property_owner[tile_idx]
+        else:
+            return self.env.property_owners[tile_idx] if hasattr(self.env, 'property_owners') else -1
+    
+    def _get_property_houses(self, tile_idx):
+        """Get number of houses on property."""
+        if self.using_decision_env:
+            return int(self.env.property_houses[tile_idx])
+        else:
+            return int(self.env.property_houses[tile_idx]) if hasattr(self.env, 'property_houses') else 0
+    
+    def _can_buy_current_tile(self):
+        """Check if current tile can be bought."""
+        tile = self.tiles[self.selected_tile]
+        if tile["type"] not in {"property", "railroad", "utility"}:
+            return False
+        owner = self._get_property_owner(self.selected_tile)
+        if owner >= 0:
+            return False
+        price = tile.get("price", 0)
+        current_player = self._get_current_player()
+        return self._get_player_cash(current_player) >= price
+    
+    def _get_buildable_tiles(self):
+        """Get list of tiles where current player can build."""
+        if self.using_decision_env:
+            current_player = self._get_current_player()
+            return self.env._list_buildable_properties(current_player)
+        return []
+    
+    def _get_sellable_building_tiles(self):
+        """Get list of tiles where current player can sell buildings."""
+        if self.using_decision_env:
+            current_player = self._get_current_player()
+            return self.env._list_sell_building_candidates(current_player)
+        return []
+    
+    def _get_sellable_property_tiles(self):
+        """Get list of tiles where current player can sell property."""
+        if self.using_decision_env:
+            current_player = self._get_current_player()
+            return self.env._list_sell_property_candidates(current_player)
+        return []
     
     def _wrap_text(self, text, font, max_width):
         words = text.split()
@@ -546,6 +855,267 @@ class MonopolyVisualizer:
         close_text = font_small.render("Click anywhere to close", True, (100, 100, 100))
         self.screen.blit(close_text, close_text.get_rect(center=(x + CARD_WIDTH // 2, y + CARD_HEIGHT - 15)))
 
+    def _draw_event_card(self):
+        """
+        Draws a Chance or Community Chest card overlay on the board.
+        Uses self.current_event_card and self.current_event_type.
+        """
+        if not self.current_event_card or not self.current_event_type:
+            return
+        
+        card_data = self.current_event_card
+        card_type = self.current_event_type
+        
+        # Card Styling
+        CARD_WIDTH = 400
+        CARD_HEIGHT = 250
+        
+        # Center the card on the board
+        x = self.board_rect.centerx - CARD_WIDTH // 2
+        y = self.board_rect.centery - CARD_HEIGHT // 2
+        
+        # Colors
+        CARD_BG_COLOR = (255, 255, 255)
+        CARD_BORDER_COLOR = (0, 0, 0)
+        TEXT_COLOR = (0, 0, 0)
+        
+        # Fonts
+        font_title = pygame.font.SysFont("Arial", 28, bold=True)
+        font_body = pygame.font.SysFont("Arial", 20)
+        font_small = pygame.font.SysFont("Arial", 12)
+        
+        # 1. Draw Card Background & Border
+        card_rect = pygame.Rect(x, y, CARD_WIDTH, CARD_HEIGHT)
+        pygame.draw.rect(self.screen, CARD_BG_COLOR, card_rect)
+        pygame.draw.rect(self.screen, CARD_BORDER_COLOR, card_rect, 3)
+        
+        # 2. Draw colored header bar
+        is_chance = "CHANCE" in card_type.upper()
+        header_color = self.CHANCE_ORANGE if is_chance else self.CHEST_BLUE
+        header_rect = pygame.Rect(x + 5, y + 5, CARD_WIDTH - 10, 50)
+        pygame.draw.rect(self.screen, header_color, header_rect)
+        pygame.draw.rect(self.screen, CARD_BORDER_COLOR, header_rect, 1)
+        
+        # 3. Draw Title
+        title_surf = font_title.render(card_type.upper(), True, CARD_BORDER_COLOR)
+        title_rect = title_surf.get_rect(center=header_rect.center)
+        self.screen.blit(title_surf, title_rect)
+        
+        # 4. Draw Body Text (Wrapped)
+        margin = 30
+        max_text_width = CARD_WIDTH - (margin * 2)
+        wrapped_lines = self._wrap_text(card_data.get("text", ""), font_body, max_text_width)
+        
+        # Calculate starting Y to vertically center the text block below header
+        line_height = font_body.get_linesize()
+        total_text_height = len(wrapped_lines) * line_height
+        text_area_top = y + 70  # Below header
+        text_area_height = CARD_HEIGHT - 100  # Leave room for header and close text
+        start_text_y = text_area_top + (text_area_height - total_text_height) // 2
+        
+        for i, line in enumerate(wrapped_lines):
+            line_surf = font_body.render(line, True, TEXT_COLOR)
+            line_rect = line_surf.get_rect(center=(x + CARD_WIDTH // 2, start_text_y + i * line_height))
+            self.screen.blit(line_surf, line_rect)
+        
+        # 5. Draw icon (? for Chance, treasure chest symbol for Community Chest)
+        icon_text = "?" if is_chance else "💰"
+        icon_font = pygame.font.SysFont("Arial", 48, bold=True)
+        icon_color = (230, 230, 230)  # Faint background
+        icon_surf = icon_font.render(icon_text, True, icon_color)
+        icon_rect = icon_surf.get_rect(center=(x + CARD_WIDTH // 2, y + CARD_HEIGHT // 2 + 20))
+        # Draw icon behind text (faint watermark effect)
+        self.screen.blit(icon_surf, icon_rect)
+        
+        # Re-draw text on top of icon
+        for i, line in enumerate(wrapped_lines):
+            line_surf = font_body.render(line, True, TEXT_COLOR)
+            line_rect = line_surf.get_rect(center=(x + CARD_WIDTH // 2, start_text_y + i * line_height))
+            self.screen.blit(line_surf, line_rect)
+        
+        # 6. Draw "Click to close" text at bottom
+        close_text = font_small.render("Click anywhere to close", True, (100, 100, 100))
+        self.screen.blit(close_text, close_text.get_rect(center=(x + CARD_WIDTH // 2, y + CARD_HEIGHT - 15)))
+
+    def _draw_market_overlay(self):
+        """
+        Draws a temporary overlay showing market price updates.
+        Auto-dismisses after market_overlay_duration milliseconds.
+        """
+        # Check if overlay should auto-hide
+        elapsed = pygame.time.get_ticks() - self.market_overlay_start_time
+        if elapsed > self.market_overlay_duration:
+            self.show_market_overlay = False
+            return
+        
+        # Calculate fade effect (fade out in last 500ms)
+        alpha = 255
+        fade_start = self.market_overlay_duration - 500
+        if elapsed > fade_start:
+            alpha = int(255 * (1 - (elapsed - fade_start) / 500))
+        
+        # Card dimensions
+        CARD_WIDTH = 450
+        CARD_HEIGHT = min(80 + len(self.market_price_changes) * 32, 400)
+        
+        # Center on screen
+        x = self.width // 2 - CARD_WIDTH // 2
+        y = self.height // 2 - CARD_HEIGHT // 2
+        
+        # Create semi-transparent surface
+        overlay_surface = pygame.Surface((CARD_WIDTH, CARD_HEIGHT), pygame.SRCALPHA)
+        
+        # Background with gradient effect
+        bg_color = (30, 35, 45, min(alpha, 240))
+        pygame.draw.rect(overlay_surface, bg_color, (0, 0, CARD_WIDTH, CARD_HEIGHT), border_radius=12)
+        
+        # Border
+        border_color = (100, 180, 255, alpha)
+        pygame.draw.rect(overlay_surface, border_color, (0, 0, CARD_WIDTH, CARD_HEIGHT), 3, border_radius=12)
+        
+        # Header bar
+        header_color = (50, 100, 180, min(alpha, 220))
+        pygame.draw.rect(overlay_surface, header_color, (4, 4, CARD_WIDTH - 8, 45), border_radius=8)
+        
+        # Fonts
+        font_title = pygame.font.SysFont("Arial", 22, bold=True)
+        font_item = pygame.font.SysFont("Arial", 16)
+        font_small = pygame.font.SysFont("Arial", 12)
+        
+        # Title with icons
+        title_surf = font_title.render("📈 MARKET UPDATE 📉", True, (255, 255, 255))
+        overlay_surface.blit(title_surf, (CARD_WIDTH // 2 - title_surf.get_width() // 2, 14))
+        
+        # Turn number
+        turn_num = self.env.turn_count if hasattr(self.env, 'turn_count') else 0
+        turn_text = font_small.render(f"Turn {turn_num}", True, (180, 180, 180))
+        overlay_surface.blit(turn_text, (CARD_WIDTH - turn_text.get_width() - 15, 18))
+        
+        # Price changes list
+        y_offset = 58
+        for name, old_price, new_price, pct in self.market_price_changes:
+            # Determine color based on change
+            if pct > 0:
+                arrow = "▲"
+                change_color = (100, 255, 100)  # Green for increase
+            else:
+                arrow = "▼"
+                change_color = (255, 100, 100)  # Red for decrease
+            
+            # Property name
+            name_text = font_item.render(name[:20], True, (220, 220, 220))
+            overlay_surface.blit(name_text, (15, y_offset))
+            
+            # Price change
+            price_text = f"£{old_price} → £{new_price}"
+            price_surf = font_item.render(price_text, True, (200, 200, 200))
+            overlay_surface.blit(price_surf, (200, y_offset))
+            
+            # Percentage with arrow
+            pct_text = f"{arrow} {abs(pct):.0f}%"
+            pct_surf = font_item.render(pct_text, True, change_color)
+            overlay_surface.blit(pct_surf, (CARD_WIDTH - pct_surf.get_width() - 15, y_offset))
+            
+            y_offset += 32
+        
+        # Progress bar at bottom (time remaining)
+        progress = 1 - (elapsed / self.market_overlay_duration)
+        bar_width = int((CARD_WIDTH - 30) * progress)
+        bar_rect = pygame.Rect(15, CARD_HEIGHT - 12, bar_width, 4)
+        pygame.draw.rect(overlay_surface, (100, 180, 255, min(alpha, 180)), bar_rect, border_radius=2)
+        
+        # Blit overlay to screen
+        self.screen.blit(overlay_surface, (x, y))
+
+    def _draw_house(self, surface, x, y, color, size=12):
+        """
+        Draws a single small house icon.
+        """
+        width = size
+        total_height = size * 1.2
+        roof_h = total_height * 0.4
+        body_h = total_height - roof_h
+
+        top_peak = (x, y - total_height / 2)
+        roof_left = (x - width / 2, y - total_height / 2 + roof_h)
+        roof_right = (x + width / 2, y - total_height / 2 + roof_h)
+        
+        # Green house
+        house_color = (0, 128, 0)
+        pygame.draw.polygon(surface, house_color, [top_peak, roof_left, roof_right])
+        body_rect = pygame.Rect(roof_left[0], roof_left[1], width, body_h)
+        pygame.draw.rect(surface, house_color, body_rect)
+        pygame.draw.polygon(surface, self.BLACK, [top_peak, roof_left, roof_right], 1)
+        pygame.draw.rect(surface, self.BLACK, body_rect, 1)
+    
+    def _draw_hotel(self, surface, x, y, size=18):
+        """
+        Draws a hotel icon (red, larger building).
+        """
+        width = size
+        height = size * 1.3
+        
+        # Red hotel - taller rectangular building
+        hotel_color = (200, 0, 0)
+        hotel_rect = pygame.Rect(x - width/2, y - height/2, width, height)
+        pygame.draw.rect(surface, hotel_color, hotel_rect)
+        pygame.draw.rect(surface, self.BLACK, hotel_rect, 1)
+        
+        # Draw "H" on hotel
+        h_surf = self.font_house_num.render("H", True, self.WHITE)
+        h_rect = h_surf.get_rect(center=hotel_rect.center)
+        surface.blit(h_surf, h_rect)
+    
+    def _draw_houses_on_property(self, surface, x, y, houses_built, orientation):
+        """
+        Draw 1-4 houses or 1 hotel on a property based on development level.
+        """
+        if houses_built == 0:
+            return
+        
+        if houses_built == 5:
+            # Hotel
+            self._draw_hotel(surface, x, y, size=16)
+        else:
+            # Draw 1-4 houses in a row
+            house_size = 10
+            spacing = 12
+            total_width = houses_built * spacing
+            
+            # Adjust positioning based on orientation
+            if orientation in ["bottom", "top"]:
+                start_x = x - total_width / 2 + spacing / 2
+                for i in range(houses_built):
+                    self._draw_house(surface, start_x + i * spacing, y, None, size=house_size)
+            else:  # left, right
+                start_y = y - total_width / 2 + spacing / 2
+                for i in range(houses_built):
+                    self._draw_house(surface, x, start_y + i * spacing, None, size=house_size)
+    
+    def _draw_owner_flag(self, surface, x, y, player_color, player_num):
+        """
+        Draw a flag/banner to indicate property ownership (distinct from player tokens).
+        """
+        # Flag pole
+        pole_height = 20
+        pygame.draw.line(surface, self.BLACK, (x, y), (x, y - pole_height), 2)
+        
+        # Flag (triangular pennant)
+        flag_width = 14
+        flag_height = 10
+        flag_points = [
+            (x, y - pole_height),  # Top of pole
+            (x + flag_width, y - pole_height + flag_height / 2),  # Point
+            (x, y - pole_height + flag_height),  # Bottom of flag
+        ]
+        pygame.draw.polygon(surface, player_color, flag_points)
+        pygame.draw.polygon(surface, self.BLACK, flag_points, 1)
+        
+        # Player number on flag
+        num_surf = self.font_house_num.render(str(player_num), True, self.WHITE)
+        num_rect = num_surf.get_rect(center=(x + flag_width/2 - 1, y - pole_height + flag_height/2))
+        surface.blit(num_surf, num_rect)
+
     # ------------------------------------------------------------------
     # Drawing helpers
     # ------------------------------------------------------------------
@@ -653,8 +1223,29 @@ class MonopolyVisualizer:
 
         owner = self.env.property_owners[index]
         if owner >= 0:
+            player_color = self._get_player_color(owner)
+            
+            # Draw house icon for owned properties (below the color bar, centered)
+            if tile_type == "property":
+                # Get number of houses built (0-5, where 5 = hotel)
+                houses_built = 0
+                if hasattr(self.env, 'property_houses'):
+                    houses_built = int(self.env.property_houses[index])
+                
+                # Position house below the property name, above the price
+                house_x = rect.width // 2
+                house_y = rect.height // 2 + 5
+                
+                # Draw house with number if houses are built, otherwise just empty house
+                if houses_built > 0:
+                    self._draw_house(surface, house_x, house_y, player_color, number=houses_built, size=18)
+                else:
+                    # Draw empty house (no number) for owned but undeveloped property
+                    self._draw_house(surface, house_x, house_y, player_color, number=None, size=18)
+            
+            # Draw owner indicator circle in bottom right
             owner_surface = pygame.Surface((24, 24), pygame.SRCALPHA)
-            pygame.draw.circle(owner_surface, self._get_player_color(owner), (12, 12), 10)
+            pygame.draw.circle(owner_surface, player_color, (12, 12), 10)
             pygame.draw.circle(owner_surface, self.BLACK, (12, 12), 10, 2)
             owner_rect = owner_surface.get_rect(bottomright=(rect.width - 6, rect.height - 6))
             surface.blit(owner_surface, owner_rect)
@@ -713,6 +1304,7 @@ class MonopolyVisualizer:
         self.screen.blit(self.board_surface, self.board_rect.topleft)
         pygame.draw.rect(self.screen, self.BOARD_EDGE, self.board_rect, 6)
 
+        self._draw_property_indicators()  # Draw houses and owner markers on owned properties
         self._draw_highlight()
         self._draw_players()
         self._draw_info_panel()
@@ -721,10 +1313,74 @@ class MonopolyVisualizer:
         if self.show_property_card:
             self._draw_property_card(self.selected_tile)
         
+        # Draw event card overlay if showing (Chance/Community Chest)
+        if self.show_event_card:
+            self._draw_event_card()
+        
+        # Draw market price update overlay
+        if self.show_market_overlay:
+            self._draw_market_overlay()
+        
         # DEBUG: Draw clickable collision rectangles (remove this after tuning)
         # self._draw_debug_collision_rects()
         
         pygame.display.flip()
+    
+    def _draw_property_indicators(self):
+        """Draw houses and owner markers on all owned properties directly on the board."""
+        for index in range(40):
+            tile = self.tiles[index]
+            
+            # Get owner - handle both env types
+            if self.using_decision_env:
+                owner = self.env.property_owner[index]
+                houses_built = int(self.env.property_houses[index])
+            else:
+                owner = self.env.property_owners[index] if hasattr(self.env, 'property_owners') else -1
+                houses_built = int(self.env.property_houses[index]) if hasattr(self.env, 'property_houses') else 0
+            
+            if owner < 0:
+                continue  # Not owned, skip
+            
+            # Get the tile's layout info
+            layout_info = self.layout[index]
+            rect = layout_info["rect"]
+            orientation = layout_info["orientation"]
+            player_color = self._get_player_color(owner)
+            
+            # Calculate positions based on orientation
+            if orientation == "bottom":
+                house_x = rect.centerx
+                house_y = rect.top + 22
+                flag_x = rect.right - 12
+                flag_y = rect.bottom - 8
+            elif orientation == "top":
+                house_x = rect.centerx
+                house_y = rect.bottom - 22
+                flag_x = rect.right - 12
+                flag_y = rect.top + 28
+            elif orientation == "left":
+                house_x = rect.right - 22
+                house_y = rect.centery
+                flag_x = rect.left + 28
+                flag_y = rect.bottom - 8
+            elif orientation == "right":
+                house_x = rect.left + 22
+                house_y = rect.centery
+                flag_x = rect.right - 12
+                flag_y = rect.bottom - 8
+            else:  # corners
+                house_x = rect.centerx
+                house_y = rect.centery
+                flag_x = rect.right - 15
+                flag_y = rect.bottom - 8
+            
+            # Draw houses/hotel for properties only
+            if tile["type"] == "property" and houses_built > 0:
+                self._draw_houses_on_property(self.screen, house_x, house_y, houses_built, orientation)
+            
+            # Draw owner flag (distinct from player tokens)
+            self._draw_owner_flag(self.screen, flag_x, flag_y, player_color, owner + 1)
     
     def _get_collision_rect(self, idx):
         """
@@ -865,79 +1521,99 @@ class MonopolyVisualizer:
         y = self.info_rect.top + 12
         panel_width = self.info_rect.width - 24
 
-        # Title - Player Console (italic style)
+        # Title - Player Console
         title = self.font_large.render("Player Console", True, self.BLACK)
         self.screen.blit(title, (x, y))
         y += 32
 
-        current_player = self.env.current_player % self.max_players
+        current_player = self._get_current_player()
+        player_type = "Human" if current_player == 0 else "AI"
         
-        # Current Player with colored circle
-        player_label = self.font_stats.render("Current Player: ", True, self.BLACK)
+        # Current Player with type
+        player_label = self.font_stats.render(f"Turn: P{current_player + 1} ({player_type})", True, self.BLACK)
         self.screen.blit(player_label, (x, y))
-        player_id_text = self.font_stats.render(f"P{current_player + 1}", True, self.BLACK)
-        self.screen.blit(player_id_text, (x + player_label.get_width(), y))
         y += 22
 
-        # Money with money bag emoji
-        cash = int(self.env.player_cash[current_player])
-        money_text = self.font_stats.render(f"Money: ${cash} ", True, self.BLACK)
-        self.screen.blit(money_text, (x, y))
-        # Draw a small money bag icon
-        bag_x = x + money_text.get_width()
-        pygame.draw.circle(self.screen, (218, 165, 32), (bag_x + 8, y + 10), 8)
-        pygame.draw.polygon(self.screen, (218, 165, 32), [(bag_x + 2, y + 6), (bag_x + 8, y), (bag_x + 14, y + 6)])
-        y += 22
+        # Show both players' cash
+        for pid in range(self.max_players):
+            p_type = "You" if pid == 0 else "AI"
+            cash = int(self._get_player_cash(pid))
+            color = self._get_player_color(pid)
+            
+            # Player indicator circle
+            pygame.draw.circle(self.screen, color, (x + 8, y + 9), 6)
+            pygame.draw.circle(self.screen, self.BLACK, (x + 8, y + 9), 6, 1)
+            
+            money_text = self.font_stats.render(f"P{pid + 1} ({p_type}): ${cash}", True, self.BLACK)
+            self.screen.blit(money_text, (x + 20, y))
+            y += 20
+        
+        y += 5
 
-        # Roll info
-        if self.last_dice:
-            roll_label = f"Roll: --"
-        else:
-            roll_label = "Roll: --"
-        self.screen.blit(self.font_stats.render(roll_label, True, self.BLACK), (x, y))
+        # Game State indicator
+        state_text = ""
+        state_color = self.BLACK
+        if self.game_state == GameState.AWAITING_ROLL:
+            state_text = "🎲 Roll Dice"
+            state_color = (0, 128, 0)
+        elif self.game_state == GameState.AWAITING_DECISION:
+            state_text = "⚡ Make Decision"
+            state_color = (0, 0, 200)
+        elif self.game_state == GameState.AWAITING_TILE_SELECT:
+            action = self.pending_action_type or "action"
+            state_text = f"👆 Click tile to {action}"
+            state_color = (200, 100, 0)
+        elif self.game_state == GameState.GAME_OVER:
+            state_text = "🏆 Game Over"
+            state_color = (128, 0, 128)
+        
+        state_label = self.font_stats.render(state_text, True, state_color)
+        self.screen.blit(state_label, (x, y))
         y += 24
 
-        # Owned Properties section with list box
-        self.screen.blit(self.font_medium.render("Owned Properties", True, self.BLACK), (x, y))
+        # Owned Properties section
+        self.screen.blit(self.font_medium.render("Your Properties", True, self.BLACK), (x, y))
         y += 22
         
         # Properties list box
-        props_box_height = 100
+        props_box_height = 80
         props_box = pygame.Rect(x, y, panel_width, props_box_height)
         pygame.draw.rect(self.screen, self.WHITE, props_box)
         pygame.draw.rect(self.screen, (180, 180, 180), props_box, 1)
         
-        owned_props = [tile["name"] for idx, tile in enumerate(self.tiles) if self.env.property_owners[idx] == current_player]
+        # Get human player's (P1) properties
+        owned_props = []
+        for idx, tile in enumerate(self.tiles):
+            owner = self._get_property_owner(idx)
+            if owner == 0:  # Human player
+                houses = self._get_property_houses(idx)
+                dev = f" ({houses}h)" if houses > 0 else ""
+                owned_props.append(f"{tile['name']}{dev}")
+        
         prop_y = y + 4
-        for prop_name in owned_props[:5]:  # Show up to 5 properties
-            prop_text = self.font_small.render(prop_name, True, self.BLACK)
+        for prop_name in owned_props[:4]:  # Show up to 4 properties
+            prop_text = self.font_small.render(prop_name[:22], True, self.BLACK)
             self.screen.blit(prop_text, (x + 6, prop_y))
             prop_y += 18
         
-        # Scrollbar placeholder on right
-        scrollbar_rect = pygame.Rect(props_box.right - 14, props_box.top, 12, props_box.height)
-        pygame.draw.rect(self.screen, (220, 220, 220), scrollbar_rect)
-        pygame.draw.rect(self.screen, (180, 180, 180), scrollbar_rect, 1)
-        # Scroll thumb
-        thumb_rect = pygame.Rect(scrollbar_rect.left + 2, scrollbar_rect.top + 2, 8, 24)
-        pygame.draw.rect(self.screen, (160, 160, 160), thumb_rect)
+        if len(owned_props) > 4:
+            more_text = self.font_small.render(f"... +{len(owned_props) - 4} more", True, (100, 100, 100))
+            self.screen.blit(more_text, (x + 6, prop_y))
         
-        y += props_box_height + 10
+        y += props_box_height + 8
 
         # Dice Rolls section
-        self.screen.blit(self.font_medium.render("Dice Rolls", True, self.BLACK), (x, y))
+        self.screen.blit(self.font_medium.render("Last Roll", True, self.BLACK), (x, y))
         y += 22
         
-        # Dice display box (centered, below Dice Rolls header)
         dice_box_width = panel_width
         dice_box_height = 52
         dice_box = pygame.Rect(x, y, dice_box_width, dice_box_height)
         pygame.draw.rect(self.screen, (230, 230, 230), dice_box, border_radius=6)
         pygame.draw.rect(self.screen, (180, 180, 180), dice_box, 2, border_radius=6)
         
-        # Draw dice images inside the box (centered)
         if self.last_dice:
-            dice_total_width = 44 * 2 + 6  # two dice + spacing
+            dice_total_width = 44 * 2 + 6
             dice_start_x = dice_box.centerx - dice_total_width // 2
             dice_y = dice_box.centery - 22
             for idx, value in enumerate(self.last_dice):
@@ -945,18 +1621,17 @@ class MonopolyVisualizer:
                 if dice_img:
                     self.screen.blit(dice_img, (dice_start_x + idx * 47, dice_y))
         
-        y += dice_box_height + 10
+        y += dice_box_height + 8
         
         # Current Tile section
         self.screen.blit(self.font_medium.render("Current Tile", True, self.BLACK), (x, y))
         y += 22
         
-        # Current tile name in a box
         tile = self.tiles[self.selected_tile]
         tile_name_box = pygame.Rect(x, y, panel_width, 28)
         pygame.draw.rect(self.screen, (230, 230, 230), tile_name_box, border_radius=4)
         pygame.draw.rect(self.screen, (180, 180, 180), tile_name_box, 1, border_radius=4)
-        tile_name_text = self.font_stats.render(tile["name"], True, self.BLACK)
+        tile_name_text = self.font_stats.render(tile["name"][:20], True, self.BLACK)
         self.screen.blit(tile_name_text, (tile_name_box.left + 10, tile_name_box.centery - tile_name_text.get_height() // 2))
 
         self._draw_action_buttons()
@@ -965,7 +1640,7 @@ class MonopolyVisualizer:
     def _draw_action_buttons(self):
         if self.action_buttons:
             heading_pos = (self.action_buttons[0].rect.left, self.action_buttons[0].rect.top - 28)
-            heading = self.font_medium.render("Move Options", True, self.BLACK)
+            heading = self.font_medium.render("Actions", True, self.BLACK)
             self.screen.blit(heading, heading_pos)
 
         for button in self.action_buttons:
@@ -1001,20 +1676,24 @@ class MonopolyVisualizer:
             self.screen.blit(plus_text, plus_text.get_rect(center=self.plus_rect.center))
 
     def _draw_message_log(self):
-        footer_height = 80
+        
+        """Draw activity log at bottom of info panel."""
+        footer_height = 70
         footer_rect = pygame.Rect(
             self.info_rect.left + 12,
-            self.info_rect.bottom - footer_height - 12,
+            self.info_rect.bottom - footer_height - 8,
             self.info_rect.width - 24,
             footer_height,
         )
-        pygame.draw.rect(self.screen, (255, 255, 255), footer_rect, border_radius=6)
+        pygame.draw.rect(self.screen, (250, 250, 250), footer_rect, border_radius=6)
         pygame.draw.rect(self.screen, (180, 180, 180), footer_rect, 1, border_radius=6)
-        y = footer_rect.top + 6
-        self.screen.blit(self.font_medium.render("Activity Log", True, self.BLACK), (footer_rect.left + 8, y))
-        y += 22
+        y = footer_rect.top + 4
+        self.screen.blit(self.font_small.render("Activity Log", True, (100, 100, 100)), (footer_rect.left + 8, y))
+        y += 16
         for msg in self.message_log[-3:]:  # Show last 3 messages
-            msg_text = self.font_small.render(msg, True, (60, 60, 60))
+            # Truncate long messages
+            display_msg = msg[:40] + "..." if len(msg) > 40 else msg
+            msg_text = self.font_small.render(display_msg, True, (60, 60, 60))
             self.screen.blit(msg_text, (footer_rect.left + 8, y))
             y += 16
 
@@ -1043,15 +1722,38 @@ class MonopolyVisualizer:
 
     def _handle_tile_click(self, pos):
         """
-        Check if a tile was clicked. If it's a property/railroad/utility,
-        show the property card and return the property name.
-        Returns the property name if clicked, None otherwise.
+        Check if a tile was clicked. Handle based on game state.
         """
         for idx in range(40):
             collision_rect = self._get_collision_rect(idx)
             
             if collision_rect.collidepoint(pos):
                 tile = self.tiles[idx]
+                current_player = self._get_current_player()
+                
+                # If we're waiting for tile selection for build/sell
+                if self.game_state == GameState.AWAITING_TILE_SELECT:
+                    if self.pending_action_type == "build":
+                        if idx in self._get_buildable_tiles():
+                            self._execute_build(idx)
+                            return tile["name"]
+                        else:
+                            self._push_message(f"Cannot build on {tile['name']}")
+                    elif self.pending_action_type == "sell_building":
+                        if idx in self._get_sellable_building_tiles():
+                            self._execute_sell_building(idx)
+                            return tile["name"]
+                        else:
+                            self._push_message(f"Cannot sell building from {tile['name']}")
+                    elif self.pending_action_type == "sell_property":
+                        if idx in self._get_sellable_property_tiles():
+                            self._execute_sell_property(idx)
+                            return tile["name"]
+                        else:
+                            self._push_message(f"Cannot sell {tile['name']}")
+                    return None
+                
+                # Normal click - show property card
                 if tile["type"] in ["property", "railroad", "utility"]:
                     self.selected_tile = idx
                     self.show_property_card = True
@@ -1060,23 +1762,34 @@ class MonopolyVisualizer:
         return None
 
     def _handle_button_click(self, pos):
+        # Close event card if showing (Chance/Community Chest)
+        if self.show_event_card:
+            self.show_event_card = False
+            self.current_event_card = None
+            self.current_event_type = None
+            return
+        
         # Close property card if showing
         if self.show_property_card:
             self.show_property_card = False
             return
         
-        # Check +/- buttons for sell count
-        if hasattr(self, 'minus_rect') and self.minus_rect.collidepoint(pos):
-            self.sell_count = max(0, self.sell_count - 1)
-            return
-        if hasattr(self, 'plus_rect') and self.plus_rect.collidepoint(pos):
-            self.sell_count = min(5, self.sell_count + 1)
+        # Cancel tile selection mode on any non-tile click
+        if self.game_state == GameState.AWAITING_TILE_SELECT:
+            # Check if a tile was clicked
+            clicked_property = self._handle_tile_click(pos)
+            if clicked_property:
+                return
+            # Otherwise cancel selection mode
+            self.game_state = GameState.AWAITING_DECISION
+            self.pending_action_type = None
+            self._push_message("Action cancelled")
             return
         
         # Check if a tile was clicked
         clicked_property = self._handle_tile_click(pos)
         if clicked_property:
-            self._push_message(f"Viewing property: {clicked_property}")
+            self._push_message(f"Viewing: {clicked_property}")
             return
         
         for button in self.action_buttons:
@@ -1084,95 +1797,339 @@ class MonopolyVisualizer:
                 break
 
     def _handle_roll(self):
-        if not self.awaiting_roll:
+        """Roll dice and move current player."""
+        if self.game_state != GameState.AWAITING_ROLL:
             return
+        
+        current_player = self._get_current_player()
+        
+        # Roll dice
         die_one = random.randint(1, 6)
         die_two = random.randint(1, 6)
         dice_total = die_one + die_two
         self.last_roll_total = dice_total
         self.last_dice = (die_one, die_two)
-        current_player = self.env.current_player % self.max_players
         self.player_last_rolls[current_player] = self.last_dice
-        new_position = (self.player_positions[current_player] + dice_total) % len(self.tiles)
+        
+        # Move player
+        old_position = self.player_positions[current_player]
+        new_position = (old_position + dice_total) % len(self.tiles)
         self.player_positions[current_player] = new_position
         self.selected_tile = new_position
+        
+        # Update env positions
+        if self.using_decision_env:
+            passed_go = old_position + dice_total >= 40
+            self.env.player_positions[current_player] = new_position
+            if passed_go:
+                self.env.player_cash[current_player] += 200
+                self._push_message(f"P{current_player + 1} passed GO! Collected $200")
+        
         tile = self.tiles[new_position]
-        self._push_message(f"P{current_player + 1} rolled {dice_total} and landed on {tile['name']}")
+        self._push_message(f"P{current_player + 1} rolled {dice_total} → {tile['name']}")
+        
+        # Handle tile effects
+        self._handle_tile_landing(current_player, new_position, dice_total)
+        
+        # Transition to decision state
+        self.game_state = GameState.AWAITING_DECISION
         self.awaiting_roll = False
         self.awaiting_decision = True
         
-        # Show property card if landed on a property, railroad, or utility
+        # Show property card if landed on purchasable tile
         if tile["type"] in ["property", "railroad", "utility"]:
             self.show_property_card = True
+        elif tile["type"] == "chance":
+            self.current_event_card = random.choice(chance_cards)
+            self.current_event_type = "CHANCE"
+            self.show_event_card = True
+            self._apply_card_effect(current_player, self.current_event_card)
+        elif tile["type"] == "chest":
+            self.current_event_card = random.choice(chest_cards)
+            self.current_event_type = "COMMUNITY CHEST"
+            self.show_event_card = True
+            self._apply_card_effect(current_player, self.current_event_card)
     
-    def _handle_sell_property(self):
-        pass
+    def _handle_tile_landing(self, player_id, tile_idx, dice_total):
+        """Handle effects of landing on a tile."""
+        tile = self.tiles[tile_idx]
+        tile_type = tile.get("type")
+        
+        if self.using_decision_env:
+            # Tax tiles
+            if tile_type == "tax":
+                amount = tile.get("price", 100)
+                self.env.player_cash[player_id] -= amount
+                self._push_message(f"P{player_id + 1} paid ${amount} tax")
+            
+            # Go To Jail
+            elif tile.get("corner") == "goto":
+                self._push_message(f"P{player_id + 1} goes to JAIL!")
+                self.env.player_positions[player_id] = 10  # Jail position
+                self.player_positions[player_id] = 10
+                self.env.player_in_jail[player_id] = True
+                self.env.jail_turns_remaining[player_id] = 3
+            
+            # Pay rent if landing on owned property
+            elif tile_type in ["property", "railroad", "utility"]:
+                owner = self._get_property_owner(tile_idx)
+                if owner >= 0 and owner != player_id:
+                    rent = self._calculate_rent(tile_idx, dice_total)
+                    self.env.player_cash[player_id] -= rent
+                    self.env.player_cash[owner] += rent
+                    self._push_message(f"P{player_id + 1} paid ${rent} rent to P{owner + 1}")
+    
+    def _calculate_rent(self, tile_idx, dice_total):
+        """Calculate rent for a property."""
+        if self.using_decision_env:
+            return self.env._calculate_rent(tile_idx, dice_total)
+        
+        tile = self.tiles[tile_idx]
+        houses = self._get_property_houses(tile_idx)
+        rent_data = tile.get("rent", {})
+        
+        if tile.get("type") == "property":
+            if houses == 0:
+                return rent_data.get("base", 0)
+            elif houses == 5:
+                return rent_data.get("hotel", 0)
+            else:
+                return rent_data.get(f"{houses}h", 0)
+        return rent_data.get("base", 0)
+    
+    def _apply_card_effect(self, player_id, card):
+        """Apply effect of Chance/Community Chest card."""
+        card_type = card.get("type")
+        
+        if self.using_decision_env:
+            if card_type == "money":
+                self.env.player_cash[player_id] += card.get("amount", 0)
+                amt = card.get("amount", 0)
+                if amt >= 0:
+                    self._push_message(f"P{player_id + 1} received ${amt}")
+                else:
+                    self._push_message(f"P{player_id + 1} paid ${-amt}")
+            elif card_type == "move":
+                target = card.get("target", 0)
+                self.env.player_positions[player_id] = target
+                self.player_positions[player_id] = target
+                if target == 0:
+                    self.env.player_cash[player_id] += 200
+                self._push_message(f"P{player_id + 1} moved to {self.tiles[target]['name']}")
+            elif card_type == "go_to_jail":
+                self.env.player_positions[player_id] = 10
+                self.player_positions[player_id] = 10
+                self.env.player_in_jail[player_id] = True
+                self.env.jail_turns_remaining[player_id] = 3
+                self._push_message(f"P{player_id + 1} goes to JAIL!")
+            elif card_type == "jail_card":
+                self.env.player_jail_cards[player_id] += 1
+                self._push_message(f"P{player_id + 1} got a Get Out of Jail Free card!")
 
     def _handle_buy(self):
-        if not self.awaiting_decision:
+        """Buy the current tile."""
+        if self.game_state != GameState.AWAITING_DECISION:
             return
+        
         tile = self.tiles[self.selected_tile]
-        current_player = self.env.current_player % self.max_players
+        current_player = self._get_current_player()
+        
         if tile["type"] not in {"property", "railroad", "utility"}:
-            self._push_message("Nothing to buy on this tile.")
+            self._push_message("Cannot buy this tile")
             return
-
-        owner = self.env.property_owners[self.selected_tile]
-        if owner >= 0 and owner != current_player:
-            self._push_message(f"Already owned by P{owner + 1}.")
+        
+        owner = self._get_property_owner(self.selected_tile)
+        if owner >= 0:
+            self._push_message(f"Already owned by P{owner + 1}")
             return
-
+        
         price = tile.get("price", 0)
-        if owner == current_player:
-            self._push_message("You already own this property.")
+        if self._get_player_cash(current_player) < price:
+            self._push_message("Not enough cash!")
             return
-
-        if price and self.env.player_cash[current_player] < price:
-            self._push_message("Not enough cash to buy this property.")
-            return
-
-        if price:
+        
+        # Execute purchase
+        if self.using_decision_env:
             self.env.player_cash[current_player] -= price
-        self.env.property_owners[self.selected_tile] = current_player
-        self._push_message(f"P{current_player + 1} bought {tile['name']} for ${price}.")
+            self.env.property_owner[self.selected_tile] = current_player
+        else:
+            self.env.player_cash[current_player] -= price
+            self.env.property_owners[self.selected_tile] = current_player
+        
+        self._push_message(f"P{current_player + 1} bought {tile['name']} for ${price}")
         self._end_turn()
 
     def _handle_skip(self):
-        if not self.awaiting_decision:
+        """End turn without buying."""
+        if self.game_state not in [GameState.AWAITING_DECISION, GameState.AWAITING_TILE_SELECT]:
             return
-        tile = self.tiles[self.selected_tile]
-        current_player = self.env.current_player % self.max_players
-        self._push_message(f"P{current_player + 1} skips buying {tile['name']}")
+        
+        current_player = self._get_current_player()
+        self._push_message(f"P{current_player + 1} ends turn")
         self._end_turn()
 
     def _handle_build(self):
-        current_player = self.env.current_player % self.max_players
-        self._push_message(f"P{current_player + 1} selected Build House (logic pending)")
-
-    def _handle_sell(self):
-        current_player = self.env.current_player % self.max_players
-        owner = self.env.property_owners[self.selected_tile]
-        tile = self.tiles[self.selected_tile]
-        if owner == current_player:
-            self.env.property_owners[self.selected_tile] = -1
-            refund = (tile.get("price", 0) or 0) // 2
-            self.env.player_cash[current_player] += refund
-            self._push_message(f"P{current_player + 1} sells {tile['name']} for ${refund}.")
-        elif owner >= 0:
-            self._push_message(f"Only P{owner + 1} can sell this property.")
-        else:
-            self._push_message("No owner registered on this tile.")
+        """Enter build mode - player selects tile to build on."""
+        if self.game_state != GameState.AWAITING_DECISION:
+            return
+        
+        buildable = self._get_buildable_tiles()
+        if not buildable:
+            self._push_message("No properties available to build on!")
+            return
+        
+        # List buildable properties
+        names = [self.tiles[idx]["name"] for idx in buildable[:3]]
+        self._push_message(f"Click a property to build: {', '.join(names)}...")
+        
+        self.game_state = GameState.AWAITING_TILE_SELECT
+        self.pending_action_type = "build"
+        self.buildable_tiles = buildable
+    
+    def _execute_build(self, tile_idx):
+        """Execute building a house on the selected tile."""
+        current_player = self._get_current_player()
+        tile = self.tiles[tile_idx]
+        
+        if self.using_decision_env:
+            result = self.env._handle_build_property(tile_idx, current_player)
+            if result > 0:
+                houses = self._get_property_houses(tile_idx)
+                dev = "hotel" if houses == 5 else f"{houses} house(s)"
+                self._push_message(f"P{current_player + 1} built on {tile['name']} ({dev})")
+            else:
+                self._push_message(f"Failed to build on {tile['name']}")
+        
+        self.game_state = GameState.AWAITING_DECISION
+        self.pending_action_type = None
+    
+    def _handle_sell_building(self):
+        """Enter sell building mode."""
+        if self.game_state != GameState.AWAITING_DECISION:
+            return
+        
+        sellable = self._get_sellable_building_tiles()
+        if not sellable:
+            self._push_message("No buildings to sell!")
+            return
+        
+        names = [self.tiles[idx]["name"] for idx in sellable[:3]]
+        self._push_message(f"Click property to sell building: {', '.join(names)}...")
+        
+        self.game_state = GameState.AWAITING_TILE_SELECT
+        self.pending_action_type = "sell_building"
+        self.sellable_building_tiles = sellable
+    
+    def _execute_sell_building(self, tile_idx):
+        """Execute selling a building from the selected tile."""
+        current_player = self._get_current_player()
+        tile = self.tiles[tile_idx]
+        
+        if self.using_decision_env:
+            result = self.env._handle_sell_building(tile_idx, current_player)
+            if result > 0:
+                refund = tile.get("house_cost", 50) * 0.5
+                self._push_message(f"P{current_player + 1} sold building from {tile['name']} (+${int(refund)})")
+            else:
+                self._push_message(f"Failed to sell building from {tile['name']}")
+        
+        self.game_state = GameState.AWAITING_DECISION
+        self.pending_action_type = None
+    
+    def _handle_sell_property_btn(self):
+        """Enter sell property mode."""
+        if self.game_state != GameState.AWAITING_DECISION:
+            return
+        
+        sellable = self._get_sellable_property_tiles()
+        if not sellable:
+            self._push_message("No properties to sell!")
+            return
+        
+        names = [self.tiles[idx]["name"] for idx in sellable[:3]]
+        self._push_message(f"Click property to sell: {', '.join(names)}...")
+        
+        self.game_state = GameState.AWAITING_TILE_SELECT
+        self.pending_action_type = "sell_property"
+        self.sellable_property_tiles = sellable
+    
+    def _execute_sell_property(self, tile_idx):
+        """Execute selling the selected property."""
+        current_player = self._get_current_player()
+        tile = self.tiles[tile_idx]
+        
+        if self.using_decision_env:
+            result = self.env._handle_sell_property(tile_idx, current_player)
+            if result > 0:
+                base_price = tile.get("price", 0)
+                refund = base_price * 0.5
+                self._push_message(f"P{current_player + 1} sold {tile['name']} (+${int(refund)})")
+            else:
+                self._push_message(f"Failed to sell {tile['name']}")
+        
+        self.game_state = GameState.AWAITING_DECISION
+        self.pending_action_type = None
 
     def _end_turn(self):
+        """End current player's turn and switch to next player."""
+        current_player = self._get_current_player()
+        
+        # Check bankruptcy
+        if self.using_decision_env:
+            self.env._check_and_handle_bankruptcy(current_player)
+            
+            # Check for game over
+            active_players = sum(1 for i in range(self.max_players) if not self.env.player_bankrupt[i])
+            if active_players <= 1:
+                self.game_state = GameState.GAME_OVER
+                winner = next(i for i in range(self.max_players) if not self.env.player_bankrupt[i])
+                self._push_message(f"GAME OVER! Player {winner + 1} wins!")
+                return
+        
+        # Switch to next player
+        next_player = (current_player + 1) % self.max_players
+        
+        if self.using_decision_env:
+            self.env.current_player = next_player
+            self.env.turn_count += 1
+            
+            # Check if it's time for market price update (every 5 turns)
+            if self.env.turn_count % self.market_update_interval == 0 and self.market_model is not None:
+                self._update_market_prices()
+            
+            # Skip bankrupt players
+            while self.env.player_bankrupt[next_player]:
+                next_player = (next_player + 1) % self.max_players
+                self.env.current_player = next_player
+        else:
+            self.env.current_player = next_player
+            if hasattr(self.env, 'turn_counter'):
+                self.env.turn_counter += 1
+                # Check if it's time for market price update
+                if self.env.turn_counter % self.market_update_interval == 0 and self.market_model is not None:
+                    self._update_market_prices()
+        
+        # Reset state for next turn
+        self.game_state = GameState.AWAITING_ROLL
         self.awaiting_roll = True
         self.awaiting_decision = False
-        self.env.current_player = (self.env.current_player + 1) % self.max_players
-        self.env.turn_counter += 1
+        self.pending_action_type = None
+        
+        player_type = "Human" if next_player == 0 else "AI"
+        self._push_message(f"Player {next_player + 1}'s turn ({player_type})")
 
     def run(self):
-        """Launch interactive UI for up to four players."""
+        """Launch interactive UI for Human vs AI game."""
         running = True
-        print("Controls:\n  - Left click buttons to trigger actions\n  - ESC closes the window")
+        print("=" * 50)
+        print("DYMONOPOLY - Human vs AI")
+        print("=" * 50)
+        print("Controls:")
+        print("  - Left click on buttons to trigger actions")
+        print("  - Click on tiles to view property cards")
+        print("  - When building/selling, click on the target tile")
+        print("  - ESC closes the window")
+        print("=" * 50)
 
         while running:
             for event in pygame.event.get():
@@ -1190,8 +2147,8 @@ class MonopolyVisualizer:
 
 # Usage example
 if __name__ == "__main__":
-    print("Initializing Dymonopoly environment...")
-    env = DymonopolyEnv(num_properties=40, num_players=4)
+    print("Initializing Dymonopoly Decision Environment...")
+    env = DymonopolyDecisionEnv(num_players=2)
     env.reset()
     
     print("Starting visualization...")

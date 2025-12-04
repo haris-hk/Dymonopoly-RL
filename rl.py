@@ -849,18 +849,19 @@ class DymonopolyDecisionEnv(gym.Env):
        
         # Chance and Community Chest decks (extend as needed)
         self.chance_cards = [
-            {"type": "money", "amount": 200},
-            {"type": "money", "amount": -100},
-            {"type": "move", "target": 0},
-            {"type": "go_to_jail"},
-            {"type": "jail_card"},
+            {"type": "money", "amount": 200, "text": "Bank error in your favour. Collect £200."},
+            {"type": "money", "amount": -100, "text": "Pay speeding fine of £100."},
+            {"type": "move", "target": 0, "text": "Advance to Go. Collect £200."},
+            {"type": "go_to_jail", "text": "Go directly to Jail. Do not pass Go, do not collect £200."},
+            {"type": "jail_card", "text": "Get Out of Jail Free. This card may be kept until needed or sold."},
         ]
+
         self.chest_cards = [
-            {"type": "money", "amount": 150},
-            {"type": "money", "amount": -50},
-            {"type": "money", "amount": 100},
-            {"type": "go_to_jail"},
-            {"type": "jail_card"},
+            {"type": "money", "amount": 150, "text": "Your building loan matures. Collect £150."},
+            {"type": "money", "amount": -50, "text": "Doctor's fees. Pay £50."},
+            {"type": "money", "amount": 100, "text": "Life insurance matures. Collect £100."},
+            {"type": "go_to_jail", "text": "Go directly to Jail. Do not pass Go, do not collect £200."},
+            {"type": "jail_card", "text": "Get Out of Jail Free. This card may be kept until needed or sold."},
         ]
 
         self._init_color_groups()
