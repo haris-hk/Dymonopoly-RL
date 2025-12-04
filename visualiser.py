@@ -37,15 +37,15 @@ class MonopolyVisualizer:
     def __init__(self, env: DymonopolyEnv):
         pygame.init()
         self.env = env
-        self.width = 1240
-        self.height = 920
+        self.width = 1100
+        self.height = 780
         self.screen = pygame.display.set_mode((self.width, self.height))
         pygame.display.set_caption("Dymonopoly - Market Board")
 
-        self.corner_size = 120
-        self.edge_size = 70
+        self.corner_size = 100
+        self.edge_size = 58
         self.board_size = self.corner_size * 2 + self.edge_size * 9
-        self.margin_left = 40
+        self.margin_left = 20
         self.margin_top = (self.height - self.board_size) // 2
         self.board_rect = pygame.Rect(
             self.margin_left,
@@ -54,9 +54,9 @@ class MonopolyVisualizer:
             self.board_size,
         )
         self.info_rect = pygame.Rect(
-            self.board_rect.right + 30,
+            self.board_rect.right + 20,
             self.board_rect.top,
-            self.width - (self.board_rect.right + 60),
+            self.width - (self.board_rect.right + 40),
             self.board_size,
         )
 
@@ -110,6 +110,7 @@ class MonopolyVisualizer:
 
         self.clock = pygame.time.Clock()
         self.action_buttons = self._create_action_buttons()
+        self.sell_count = 0  # Counter for sell building
     
     def _build_tiles(self):
         return [
@@ -231,7 +232,7 @@ class MonopolyVisualizer:
         return layout
 
     def _load_board_surface(self):
-        board_path = os.path.join(self.images_dir, "monopoly_board.jpg")
+        board_path = os.path.join(self.images_dir, "dymonopoly_board.png")
         if os.path.exists(board_path):
             board_img = pygame.image.load(board_path).convert()
             return pygame.transform.smoothscale(board_img, (self.board_size, self.board_size))
@@ -268,26 +269,32 @@ class MonopolyVisualizer:
     def _create_action_buttons(self):
         buttons = []
         button_width = self.info_rect.width - 32
-        button_height = 44
+        button_height = 36
         start_x = self.info_rect.left + 16
-        start_y = self.info_rect.bottom - (button_height + 12) * 5 - 160
+        # Position buttons after Dice Rolls and Current Tile sections
+        start_y = self.info_rect.top + 420
 
         specs = [
-            ("Roll Dice", self._handle_roll, lambda: self.awaiting_roll, (76, 175, 80)),
-            ("Buy Property", self._handle_buy, lambda: self.awaiting_decision, (65, 105, 225)),
-            ("Skip Buying", self._handle_skip, lambda: self.awaiting_decision, (189, 189, 189)),
-            ("Build House", self._handle_build, lambda: True, (255, 193, 7)),
-            ("Sell House", self._handle_sell, lambda: True, (233, 30, 99)),
+            ("Roll Dice", self._handle_roll, lambda: self.awaiting_roll, (76, 175, 80)),  # Green
+            ("Buy", self._handle_buy, lambda: self.awaiting_decision, (100, 149, 237)),  # Blue
+            ("Skip", self._handle_skip, lambda: self.awaiting_decision, (189, 189, 189)),  # Gray
+            ("Build", self._handle_build, lambda: True, (76, 175, 80)),  # Green
         ]
 
         for idx, (label, callback, enabled_fn, color) in enumerate(specs):
             rect = pygame.Rect(
                 start_x,
-                start_y + idx * (button_height + 12),
+                start_y + idx * (button_height + 5),
                 button_width,
                 button_height,
             )
             buttons.append(ActionButton(rect, label, callback, color, enabled_fn))
+        
+        # Sell Building button with counter (special layout)
+        sell_y = start_y + 4 * (button_height + 5)
+        sell_rect = pygame.Rect(start_x, sell_y, button_width - 90, button_height)
+        buttons.append(ActionButton(sell_rect, "Sell Building", self._handle_sell, (210, 180, 140), lambda: True))
+        
         return buttons
     
     def _wrap_text(self, text, font, max_width):
@@ -575,79 +582,108 @@ class MonopolyVisualizer:
         pygame.draw.rect(self.screen, (248, 248, 248), self.info_rect)
         pygame.draw.rect(self.screen, self.BLACK, self.info_rect, 3)
 
-        x = self.info_rect.left + 18
-        y = self.info_rect.top + 20
+        x = self.info_rect.left + 12
+        y = self.info_rect.top + 12
+        panel_width = self.info_rect.width - 24
 
+        # Title - Player Console (italic style)
         title = self.font_large.render("Player Console", True, self.BLACK)
         self.screen.blit(title, (x, y))
-        y += 36
+        y += 32
 
         current_player = self.env.current_player % self.max_players
-        turn_text = self.font_stats.render(f"Current Player: P{current_player + 1}", True, self.BLACK)
-        self.screen.blit(turn_text, (x, y))
-        y += 24
+        
+        # Current Player with colored circle
+        player_label = self.font_stats.render("Current Player: ", True, self.BLACK)
+        self.screen.blit(player_label, (x, y))
+        player_id_text = self.font_stats.render(f"P{current_player + 1}", True, self.BLACK)
+        self.screen.blit(player_id_text, (x + player_label.get_width(), y))
+        y += 22
 
+        # Money with money bag emoji
         cash = int(self.env.player_cash[current_player])
-        self.screen.blit(self.font_stats.render(f"Money: ${cash}", True, (20, 120, 20)), (x, y))
-        y += 24
+        money_text = self.font_stats.render(f"Money: ${cash} ", True, self.BLACK)
+        self.screen.blit(money_text, (x, y))
+        # Draw a small money bag icon
+        bag_x = x + money_text.get_width()
+        pygame.draw.circle(self.screen, (218, 165, 32), (bag_x + 8, y + 10), 8)
+        pygame.draw.polygon(self.screen, (218, 165, 32), [(bag_x + 2, y + 6), (bag_x + 8, y), (bag_x + 14, y + 6)])
+        y += 22
 
+        # Roll info
         if self.last_dice:
-            roll_label = f"Roll: {self.last_dice[0]} + {self.last_dice[1]} = {self.last_roll_total}"
+            roll_label = f"Roll: --"
         else:
             roll_label = "Roll: --"
         self.screen.blit(self.font_stats.render(roll_label, True, self.BLACK), (x, y))
         y += 24
 
-        owned_props = [tile["name"] for idx, tile in enumerate(self.tiles) if self.env.property_owners[idx] == current_player]
+        # Owned Properties section with list box
         self.screen.blit(self.font_medium.render("Owned Properties", True, self.BLACK), (x, y))
-        y += 24
-        if owned_props:
-            lines = self._wrap_text(
-                ", ".join(owned_props),
-                self.font_stats,
-                self.info_rect.width - 36,
-            )
-            for line in lines:
-                self.screen.blit(self.font_stats.render(line, True, (60, 60, 60)), (x, y))
-                y += 20
-        else:
-            self.screen.blit(self.font_stats.render("-", True, (120, 120, 120)), (x, y))
-            y += 22
-
-        tile = self.tiles[self.selected_tile]
-        self.screen.blit(self.font_medium.render("Tile Details", True, self.BLACK), (x, y))
-        y += 24
-        self.screen.blit(self.font_stats.render(tile["name"], True, self.BLACK), (x, y))
         y += 22
-        tile_type = tile.get("type", "?").replace("_", " ").title()
-        self.screen.blit(self.font_stats.render(f"Type: {tile_type}", True, (70, 70, 70)), (x, y))
-        y += 20
+        
+        # Properties list box
+        props_box_height = 100
+        props_box = pygame.Rect(x, y, panel_width, props_box_height)
+        pygame.draw.rect(self.screen, self.WHITE, props_box)
+        pygame.draw.rect(self.screen, (180, 180, 180), props_box, 1)
+        
+        owned_props = [tile["name"] for idx, tile in enumerate(self.tiles) if self.env.property_owners[idx] == current_player]
+        prop_y = y + 4
+        for prop_name in owned_props[:5]:  # Show up to 5 properties
+            prop_text = self.font_small.render(prop_name, True, self.BLACK)
+            self.screen.blit(prop_text, (x + 6, prop_y))
+            prop_y += 18
+        
+        # Scrollbar placeholder on right
+        scrollbar_rect = pygame.Rect(props_box.right - 14, props_box.top, 12, props_box.height)
+        pygame.draw.rect(self.screen, (220, 220, 220), scrollbar_rect)
+        pygame.draw.rect(self.screen, (180, 180, 180), scrollbar_rect, 1)
+        # Scroll thumb
+        thumb_rect = pygame.Rect(scrollbar_rect.left + 2, scrollbar_rect.top + 2, 8, 24)
+        pygame.draw.rect(self.screen, (160, 160, 160), thumb_rect)
+        
+        y += props_box_height + 10
 
-        price_text = tile.get("price")
-        if price_text:
-            self.screen.blit(
-                self.font_stats.render(f"Price: ${price_text}", True, (70, 70, 70)),
-                (x, y),
-            )
-            y += 20
-
-        owner = self.env.property_owners[self.selected_tile]
-        owner_text = "Unowned" if owner < 0 else f"Owned by P{owner + 1}"
-        owner_color = (90, 90, 90) if owner < 0 else self._get_player_color(owner)
-        self.screen.blit(self.font_stats.render(owner_text, True, owner_color), (x, y))
-        y += 28
-
-        y = self._draw_dice_history_section(x, y)
+        # Dice Rolls section
+        self.screen.blit(self.font_medium.render("Dice Rolls", True, self.BLACK), (x, y))
+        y += 22
+        
+        # Dice display box (centered, below Dice Rolls header)
+        dice_box_width = panel_width
+        dice_box_height = 52
+        dice_box = pygame.Rect(x, y, dice_box_width, dice_box_height)
+        pygame.draw.rect(self.screen, (230, 230, 230), dice_box, border_radius=6)
+        pygame.draw.rect(self.screen, (180, 180, 180), dice_box, 2, border_radius=6)
+        
+        # Draw dice images inside the box (centered)
+        if self.last_dice:
+            dice_total_width = 44 * 2 + 6  # two dice + spacing
+            dice_start_x = dice_box.centerx - dice_total_width // 2
+            dice_y = dice_box.centery - 22
+            for idx, value in enumerate(self.last_dice):
+                dice_img = self.dice_images.get(value)
+                if dice_img:
+                    self.screen.blit(dice_img, (dice_start_x + idx * 47, dice_y))
+        
+        y += dice_box_height + 10
+        
+        # Current Tile section
+        self.screen.blit(self.font_medium.render("Current Tile", True, self.BLACK), (x, y))
+        y += 22
+        
+        # Current tile name in a box
+        tile = self.tiles[self.selected_tile]
+        tile_name_box = pygame.Rect(x, y, panel_width, 28)
+        pygame.draw.rect(self.screen, (230, 230, 230), tile_name_box, border_radius=4)
+        pygame.draw.rect(self.screen, (180, 180, 180), tile_name_box, 1, border_radius=4)
+        tile_name_text = self.font_stats.render(tile["name"], True, self.BLACK)
+        self.screen.blit(tile_name_text, (tile_name_box.left + 10, tile_name_box.centery - tile_name_text.get_height() // 2))
 
         self._draw_action_buttons()
         self._draw_message_log()
 
     def _draw_action_buttons(self):
-        sell_button = next((b for b in self.action_buttons if b.label == "Sell House"), None)
-        if sell_button:
-            owner = self.env.property_owners[self.selected_tile]
-            sell_button.dynamic_color = self._get_player_color(owner) if owner >= 0 else None
-
         if self.action_buttons:
             heading_pos = (self.action_buttons[0].rect.left, self.action_buttons[0].rect.top - 28)
             heading = self.font_medium.render("Move Options", True, self.BLACK)
@@ -655,24 +691,52 @@ class MonopolyVisualizer:
 
         for button in self.action_buttons:
             button.draw(self.screen, self.font_medium)
+        
+        # Draw the sell building counter (+/- buttons and number)
+        if len(self.action_buttons) >= 5:
+            sell_button = self.action_buttons[4]  # Sell Building button
+            counter_x = sell_button.rect.right + 8
+            counter_y = sell_button.rect.top
+            counter_height = sell_button.rect.height
+            
+            # Minus button
+            self.minus_rect = pygame.Rect(counter_x, counter_y, 26, counter_height)
+            pygame.draw.rect(self.screen, (220, 60, 60), self.minus_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (30, 30, 30), self.minus_rect, 2, border_radius=4)
+            minus_text = self.font_stats.render("-", True, self.WHITE)
+            self.screen.blit(minus_text, minus_text.get_rect(center=self.minus_rect.center))
+            
+            # Counter display
+            counter_display_rect = pygame.Rect(counter_x + 28, counter_y, 26, counter_height)
+            pygame.draw.rect(self.screen, self.WHITE, counter_display_rect)
+            pygame.draw.rect(self.screen, (30, 30, 30), counter_display_rect, 2)
+            count_text = self.font_stats.render(str(self.sell_count), True, self.BLACK)
+            self.screen.blit(count_text, count_text.get_rect(center=counter_display_rect.center))
+            
+            # Plus button
+            self.plus_rect = pygame.Rect(counter_x + 56, counter_y, 26, counter_height)
+            pygame.draw.rect(self.screen, (100, 149, 237), self.plus_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (30, 30, 30), self.plus_rect, 2, border_radius=4)
+            plus_text = self.font_stats.render("+", True, self.WHITE)
+            self.screen.blit(plus_text, plus_text.get_rect(center=self.plus_rect.center))
 
     def _draw_message_log(self):
-        footer_height = 120
+        footer_height = 80
         footer_rect = pygame.Rect(
-            self.info_rect.left + 16,
-            self.info_rect.bottom - footer_height - 10,
-            self.info_rect.width - 32,
+            self.info_rect.left + 12,
+            self.info_rect.bottom - footer_height - 12,
+            self.info_rect.width - 24,
             footer_height,
         )
-        pygame.draw.rect(self.screen, (255, 255, 255), footer_rect, border_radius=8)
-        pygame.draw.rect(self.screen, (30, 30, 30), footer_rect, 2, border_radius=8)
-        y = footer_rect.top + 8
-        self.screen.blit(self.font_medium.render("Activity Log", True, self.BLACK), (footer_rect.left + 10, y))
-        y += 26
-        for msg in reversed(self.message_log):
-            msg_text = self.font_stats.render(msg, True, (60, 60, 60))
-            self.screen.blit(msg_text, (footer_rect.left + 10, y))
-            y += 20
+        pygame.draw.rect(self.screen, (255, 255, 255), footer_rect, border_radius=6)
+        pygame.draw.rect(self.screen, (180, 180, 180), footer_rect, 1, border_radius=6)
+        y = footer_rect.top + 6
+        self.screen.blit(self.font_medium.render("Activity Log", True, self.BLACK), (footer_rect.left + 8, y))
+        y += 22
+        for msg in self.message_log[-3:]:  # Show last 3 messages
+            msg_text = self.font_small.render(msg, True, (60, 60, 60))
+            self.screen.blit(msg_text, (footer_rect.left + 8, y))
+            y += 16
 
     def _draw_dice_history_section(self, start_x, start_y):
         section_title = self.font_medium.render("Dice Rolls", True, self.BLACK)
@@ -698,6 +762,14 @@ class MonopolyVisualizer:
         return y
 
     def _handle_button_click(self, pos):
+        # Check +/- buttons for sell count
+        if hasattr(self, 'minus_rect') and self.minus_rect.collidepoint(pos):
+            self.sell_count = max(0, self.sell_count - 1)
+            return
+        if hasattr(self, 'plus_rect') and self.plus_rect.collidepoint(pos):
+            self.sell_count = min(5, self.sell_count + 1)
+            return
+        
         for button in self.action_buttons:
             if button.handle_click(pos):
                 break
