@@ -60,6 +60,7 @@ class MonopolyVisualizer:
             self.board_size,
         )
 
+
         # Palette
         self.WHITE = (255, 255, 255)
         self.BLACK = (0, 0, 0)
@@ -96,6 +97,13 @@ class MonopolyVisualizer:
         self.env.current_player = 0
         self.env.turn_counter = 0
 
+        self.collision_offsets = {}
+        # example nudges: move top row a few px left, right column a few px up+       for i in range(21, 30):   # top row tiles 21..29
+        for i in range(21, 30):   # top row tiles 21..29
+            self.collision_offsets[i] = (20, 0)
+        for i in range(31, 40):   # right column tiles 31..39
+            self.collision_offsets[i] = (0, 20)
+
         self.awaiting_roll = True
         self.awaiting_decision = False
         self.last_roll_total = None
@@ -104,6 +112,7 @@ class MonopolyVisualizer:
         self.selected_tile = 0
         self.message_log = ["Click 'Roll Dice' to begin"]
         self.show_property_card = False  # Flag to show property card
+        self.last_clicked_property = None  # Stores the name of the last clicked property
 
         self.images_dir = os.path.join(os.path.dirname(__file__), "images")
         self.board_surface = self._load_board_surface()
@@ -210,7 +219,7 @@ class MonopolyVisualizer:
             idx = 20 + offset
             layout[idx] = {
                 "rect": pygame.Rect(
-                    left + offset * self.edge_size,
+                    left + self.corner_size + (offset - 1) * self.edge_size,
                     top,
                     self.edge_size,
                     self.corner_size,
@@ -223,7 +232,7 @@ class MonopolyVisualizer:
             layout[idx] = {
                 "rect": pygame.Rect(
                     right - self.corner_size,
-                    top + offset * self.edge_size,
+                    top + self.corner_size + (offset - 1) * self.edge_size,
                     self.corner_size,
                     self.edge_size,
                 ),
@@ -280,6 +289,7 @@ class MonopolyVisualizer:
             ("Buy", self._handle_buy, lambda: self.awaiting_decision, (100, 149, 237)),  # Blue
             ("Skip", self._handle_skip, lambda: self.awaiting_decision, (189, 189, 189)),  # Gray
             ("Build", self._handle_build, lambda: True, (76, 175, 80)),  # Green
+            ("Sell Property", self._handle_sell_property, lambda: True, (255, 165, 0)),  # Orange
         ]
 
         for idx, (label, callback, enabled_fn, color) in enumerate(specs):
@@ -292,7 +302,8 @@ class MonopolyVisualizer:
             buttons.append(ActionButton(rect, label, callback, color, enabled_fn))
         
         # Sell Building button with counter (special layout)
-        sell_y = start_y + 4 * (button_height + 5)
+        # Position it after the regular specs so it appears below them vertically
+        sell_y = start_y + len(specs) * (button_height + 5)
         sell_rect = pygame.Rect(start_x, sell_y, button_width - 90, button_height)
         buttons.append(ActionButton(sell_rect, "Sell Building", self._handle_sell, (210, 180, 140), lambda: True))
         
@@ -710,7 +721,80 @@ class MonopolyVisualizer:
         if self.show_property_card:
             self._draw_property_card(self.selected_tile)
         
+        # DEBUG: Draw clickable collision rectangles (remove this after tuning)
+        # self._draw_debug_collision_rects()
+        
         pygame.display.flip()
+    
+    def _get_collision_rect(self, idx):
+        """
+        Calculate the collision rectangle for tile at index idx.
+        Uses the same direct positioning as _calculate_layout.
+        """
+        left = self.board_rect.left
+        top = self.board_rect.top
+        right = self.board_rect.right
+        bottom = self.board_rect.bottom
+        
+        # Corners
+        if idx == 0:  # GO - bottom right
+            return pygame.Rect(right - self.corner_size, bottom - self.corner_size, self.corner_size, self.corner_size)
+        elif idx == 10:  # Jail - bottom left
+            return pygame.Rect(left, bottom - self.corner_size, self.corner_size, self.corner_size)
+        elif idx == 20:  # Free Parking - top left
+            return pygame.Rect(left, top, self.corner_size, self.corner_size)
+        elif idx == 30:  # Go To Jail - top right
+            return pygame.Rect(right - self.corner_size, top, self.corner_size, self.corner_size)
+        
+        # Bottom row (tiles 1-9): right to left
+        elif 1 <= idx <= 9:
+            offset = idx
+            return pygame.Rect(
+                right - self.corner_size - offset * self.edge_size,
+                bottom - self.corner_size,
+                self.edge_size,
+                self.corner_size,
+            )
+        
+        # Left column (tiles 11-19): bottom to top
+        elif 11 <= idx <= 19:
+            offset = idx - 10
+            return pygame.Rect(
+                left,
+                bottom - self.corner_size - offset * self.edge_size,
+                self.corner_size,
+                self.edge_size,
+            )
+        
+        # Top row (tiles 21-29): left to right, starting after the corner
+        elif 21 <= idx <= 29:
+            offset = idx - 20  # offset 1-9
+            return pygame.Rect(
+                left + self.corner_size + (offset - 1) * self.edge_size,
+                top,
+                self.edge_size,
+                self.corner_size,
+            )
+        
+        # Right column (tiles 31-39): top to bottom, starting after the corner
+        elif 31 <= idx <= 39:
+            offset = idx - 30  # offset 1-9
+            return pygame.Rect(
+                right - self.corner_size,
+                top + self.corner_size + (offset - 1) * self.edge_size,
+                self.corner_size,
+                self.edge_size,
+            )
+        
+        # Fallback
+        return self.layout[idx]["rect"].copy()
+    
+    def _draw_debug_collision_rects(self):
+        """Draw red outlines showing the actual clickable collision areas."""
+        for idx in range(40):
+            collision_rect = self._get_collision_rect(idx)
+            # Draw red outline for clickable area
+            pygame.draw.rect(self.screen, (255, 0, 0), collision_rect, 2)
     
     def _get_player_color(self, player_id):
         palette = [(220, 30, 33), (0, 115, 230), (46, 180, 75), (255, 215, 0)]
@@ -876,7 +960,7 @@ class MonopolyVisualizer:
         self.screen.blit(tile_name_text, (tile_name_box.left + 10, tile_name_box.centery - tile_name_text.get_height() // 2))
 
         self._draw_action_buttons()
-        self._draw_message_log()
+        # self._draw_message_log()
 
     def _draw_action_buttons(self):
         if self.action_buttons:
@@ -888,26 +972,27 @@ class MonopolyVisualizer:
             button.draw(self.screen, self.font_medium)
         
         # Draw the sell building counter (+/- buttons and number)
-        if len(self.action_buttons) >= 5:
-            sell_button = self.action_buttons[4]  # Sell Building button
+        # Find the Sell Building button by label so layout is resilient to ordering
+        sell_button = next((b for b in self.action_buttons if b.label == "Sell Building"), None)
+        if sell_button is not None:
             counter_x = sell_button.rect.right + 8
             counter_y = sell_button.rect.top
             counter_height = sell_button.rect.height
-            
+
             # Minus button
             self.minus_rect = pygame.Rect(counter_x, counter_y, 26, counter_height)
             pygame.draw.rect(self.screen, (220, 60, 60), self.minus_rect, border_radius=4)
             pygame.draw.rect(self.screen, (30, 30, 30), self.minus_rect, 2, border_radius=4)
             minus_text = self.font_stats.render("-", True, self.WHITE)
             self.screen.blit(minus_text, minus_text.get_rect(center=self.minus_rect.center))
-            
+
             # Counter display
             counter_display_rect = pygame.Rect(counter_x + 28, counter_y, 26, counter_height)
             pygame.draw.rect(self.screen, self.WHITE, counter_display_rect)
             pygame.draw.rect(self.screen, (30, 30, 30), counter_display_rect, 2)
             count_text = self.font_stats.render(str(self.sell_count), True, self.BLACK)
             self.screen.blit(count_text, count_text.get_rect(center=counter_display_rect.center))
-            
+
             # Plus button
             self.plus_rect = pygame.Rect(counter_x + 56, counter_y, 26, counter_height)
             pygame.draw.rect(self.screen, (100, 149, 237), self.plus_rect, border_radius=4)
@@ -956,6 +1041,24 @@ class MonopolyVisualizer:
             y += row_height
         return y
 
+    def _handle_tile_click(self, pos):
+        """
+        Check if a tile was clicked. If it's a property/railroad/utility,
+        show the property card and return the property name.
+        Returns the property name if clicked, None otherwise.
+        """
+        for idx in range(40):
+            collision_rect = self._get_collision_rect(idx)
+            
+            if collision_rect.collidepoint(pos):
+                tile = self.tiles[idx]
+                if tile["type"] in ["property", "railroad", "utility"]:
+                    self.selected_tile = idx
+                    self.show_property_card = True
+                    self.last_clicked_property = tile["name"]
+                    return tile["name"]
+        return None
+
     def _handle_button_click(self, pos):
         # Close property card if showing
         if self.show_property_card:
@@ -968,6 +1071,12 @@ class MonopolyVisualizer:
             return
         if hasattr(self, 'plus_rect') and self.plus_rect.collidepoint(pos):
             self.sell_count = min(5, self.sell_count + 1)
+            return
+        
+        # Check if a tile was clicked
+        clicked_property = self._handle_tile_click(pos)
+        if clicked_property:
+            self._push_message(f"Viewing property: {clicked_property}")
             return
         
         for button in self.action_buttons:
@@ -995,6 +1104,9 @@ class MonopolyVisualizer:
         # Show property card if landed on a property, railroad, or utility
         if tile["type"] in ["property", "railroad", "utility"]:
             self.show_property_card = True
+    
+    def _handle_sell_property(self):
+        pass
 
     def _handle_buy(self):
         if not self.awaiting_decision:
