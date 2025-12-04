@@ -103,6 +103,7 @@ class MonopolyVisualizer:
         self.player_last_rolls = [None] * self.max_players
         self.selected_tile = 0
         self.message_log = ["Click 'Roll Dice' to begin"]
+        self.show_property_card = False  # Flag to show property card
 
         self.images_dir = os.path.join(os.path.dirname(__file__), "images")
         self.board_surface = self._load_board_surface()
@@ -114,47 +115,47 @@ class MonopolyVisualizer:
     
     def _build_tiles(self):
         return [
-            {"name": "GO", "type": "corner", "corner": "go"},
-            {"name": "Mediterranean Avenue", "type": "property", "color": "brown", "price": 60},
-            {"name": "Community Chest", "type": "chest"},
-            {"name": "Baltic Avenue", "type": "property", "color": "brown", "price": 60},
-            {"name": "Income Tax", "type": "tax", "price": 200},
-            {"name": "Reading Railroad", "type": "railroad", "price": 200},
-            {"name": "Oriental Avenue", "type": "property", "color": "light_blue", "price": 100},
-            {"name": "Chance", "type": "chance"},
-            {"name": "Vermont Avenue", "type": "property", "color": "light_blue", "price": 100},
-            {"name": "Connecticut Avenue", "type": "property", "color": "light_blue", "price": 120},
-            {"name": "In Jail / Just Visiting", "type": "corner", "corner": "jail"},
-            {"name": "St. Charles Place", "type": "property", "color": "pink", "price": 140},
-            {"name": "Electric Company", "type": "utility", "price": 150},
-            {"name": "States Avenue", "type": "property", "color": "pink", "price": 140},
-            {"name": "Virginia Avenue", "type": "property", "color": "pink", "price": 160},
-            {"name": "Pennsylvania Railroad", "type": "railroad", "price": 200},
-            {"name": "St. James Place", "type": "property", "color": "orange", "price": 180},
-            {"name": "Community Chest", "type": "chest"},
-            {"name": "Tennessee Avenue", "type": "property", "color": "orange", "price": 180},
-            {"name": "New York Avenue", "type": "property", "color": "orange", "price": 200},
-            {"name": "Free Parking", "type": "corner", "corner": "free"},
-            {"name": "Kentucky Avenue", "type": "property", "color": "red", "price": 220},
-            {"name": "Chance", "type": "chance"},
-            {"name": "Indiana Avenue", "type": "property", "color": "red", "price": 220},
-            {"name": "Illinois Avenue", "type": "property", "color": "red", "price": 240},
-            {"name": "B. & O. Railroad", "type": "railroad", "price": 200},
-            {"name": "Atlantic Avenue", "type": "property", "color": "yellow", "price": 260},
-            {"name": "Ventnor Avenue", "type": "property", "color": "yellow", "price": 260},
-            {"name": "Water Works", "type": "utility", "price": 150},
-            {"name": "Marvin Gardens", "type": "property", "color": "yellow", "price": 280},
-            {"name": "Go To Jail", "type": "corner", "corner": "goto"},
-            {"name": "Pacific Avenue", "type": "property", "color": "green", "price": 300},
-            {"name": "North Carolina Avenue", "type": "property", "color": "green", "price": 300},
-            {"name": "Community Chest", "type": "chest"},
-            {"name": "Pennsylvania Avenue", "type": "property", "color": "green", "price": 320},
-            {"name": "Short Line", "type": "railroad", "price": 200},
-            {"name": "Chance", "type": "chance"},
-            {"name": "Park Place", "type": "property", "color": "dark_blue", "price": 350},
-            {"name": "Luxury Tax", "type": "tax", "price": 100},
-            {"name": "Boardwalk", "type": "property", "color": "dark_blue", "price": 400},
-        ]
+    {"name": "GO", "type": "corner", "corner": "go"},
+    {"name": "Old Kent Road", "type": "property", "color": "brown", "price": 60, "owned_by": -1, "rent": {"base": 2, "1h": 10, "2h": 30, "3h": 90, "4h": 160, "hotel": 250}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Community Chest", "type": "chest"},
+    {"name": "Whitechapel Road", "type": "property", "color": "brown", "price": 60, "owned_by": -1, "rent": {"base": 4, "1h": 20, "2h": 60, "3h": 180, "4h": 320, "hotel": 450}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Income Tax", "type": "tax", "price": 200},
+    {"name": "Kings Cross Station", "type": "railroad", "price": 200, "owned_by": -1, "rent": {"1_rr": 25, "2_rr": 50, "3_rr": 100, "4_rr": 200}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "The Angel, Islington", "type": "property", "color": "light_blue", "price": 100, "owned_by": -1, "rent": {"base": 6, "1h": 30, "2h": 90, "3h": 270, "4h": 400, "hotel": 550}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Chance", "type": "chance"},
+    {"name": "Euston Road", "type": "property", "color": "light_blue", "price": 100, "owned_by": -1, "rent": {"base": 6, "1h": 30, "2h": 90, "3h": 270, "4h": 400, "hotel": 550}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Pentonville Road", "type": "property", "color": "light_blue", "price": 120, "owned_by": -1, "rent": {"base": 8, "1h": 40, "2h": 100, "3h": 300, "4h": 450, "hotel": 600}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "In Jail / Just Visiting", "type": "corner", "corner": "jail"},
+    {"name": "Pall Mall", "type": "property", "color": "pink", "price": 140, "owned_by": -1, "rent": {"base": 10, "1h": 50, "2h": 150, "3h": 450, "4h": 625, "hotel": 750}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Electric Company", "type": "utility", "price": 150, "owned_by": -1, "rent": {"one_util": "4x dice", "both_utils": "10x dice"}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Whitehall", "type": "property", "color": "pink", "price": 140, "owned_by": -1, "rent": {"base": 10, "1h": 50, "2h": 150, "3h": 450, "4h": 625, "hotel": 750}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Northumberland Avenue", "type": "property", "color": "pink", "price": 160, "owned_by": -1, "rent": {"base": 12, "1h": 60, "2h": 180, "3h": 500, "4h": 700, "hotel": 900}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Marylebone Station", "type": "railroad", "price": 200, "owned_by": -1, "rent": {"1_rr": 25, "2_rr": 50, "3_rr": 100, "4_rr": 200}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Bow Street", "type": "property", "color": "orange", "price": 180, "owned_by": -1, "rent": {"base": 14, "1h": 70, "2h": 200, "3h": 550, "4h": 750, "hotel": 950}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Community Chest", "type": "chest"},
+    {"name": "Marlborough Street", "type": "property", "color": "orange", "price": 180, "owned_by": -1, "rent": {"base": 14, "1h": 70, "2h": 200, "3h": 550, "4h": 750, "hotel": 950}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Vine Street", "type": "property", "color": "orange", "price": 200, "owned_by": -1, "rent": {"base": 16, "1h": 80, "2h": 220, "3h": 600, "4h": 800, "hotel": 1000}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Free Parking", "type": "corner", "corner": "free"},
+    {"name": "Strand", "type": "property", "color": "red", "price": 220, "owned_by": -1, "rent": {"base": 18, "1h": 90, "2h": 250, "3h": 700, "4h": 875, "hotel": 1050}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Chance", "type": "chance"},
+    {"name": "Fleet Street", "type": "property", "color": "red", "price": 220, "owned_by": -1, "rent": {"base": 18, "1h": 90, "2h": 250, "3h": 700, "4h": 875, "hotel": 1050}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Trafalgar Square", "type": "property", "color": "red", "price": 240, "owned_by": -1, "rent": {"base": 20, "1h": 100, "2h": 300, "3h": 750, "4h": 925, "hotel": 1100}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Fenchurch St. Station", "type": "railroad", "price": 200, "owned_by": -1, "rent": {"1_rr": 25, "2_rr": 50, "3_rr": 100, "4_rr": 200}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Leicester Square", "type": "property", "color": "yellow", "price": 260, "owned_by": -1, "rent": {"base": 22, "1h": 110, "2h": 330, "3h": 800, "4h": 975, "hotel": 1150}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Coventry Street", "type": "property", "color": "yellow", "price": 260, "owned_by": -1, "rent": {"base": 22, "1h": 110, "2h": 330, "3h": 800, "4h": 975, "hotel": 1150}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Water Works", "type": "utility", "price": 150, "owned_by": -1, "rent": {"one_util": "4x dice", "both_utils": "10x dice"}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Piccadilly", "type": "property", "color": "yellow", "price": 280, "owned_by": -1, "rent": {"base": 24, "1h": 120, "2h": 360, "3h": 850, "4h": 1025, "hotel": 1200}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Go To Jail", "type": "corner", "corner": "goto"},
+    {"name": "Regent Street", "type": "property", "color": "green", "price": 300, "owned_by": -1, "rent": {"base": 26, "1h": 130, "2h": 390, "3h": 900, "4h": 1100, "hotel": 1275}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Oxford Street", "type": "property", "color": "green", "price": 300, "owned_by": -1, "rent": {"base": 26, "1h": 130, "2h": 390, "3h": 900, "4h": 1100, "hotel": 1275}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Community Chest", "type": "chest"},
+    {"name": "Bond Street", "type": "property", "color": "green", "price": 320, "owned_by": -1, "rent": {"base": 28, "1h": 150, "2h": 450, "3h": 1000, "4h": 1200, "hotel": 1400}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Liverpool St. Station", "type": "railroad", "price": 200, "owned_by": -1, "rent": {"1_rr": 25, "2_rr": 50, "3_rr": 100, "4_rr": 200}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Chance", "type": "chance"},
+    {"name": "Park Lane", "type": "property", "color": "dark_blue", "price": 350, "owned_by": -1, "rent": {"base": 35, "1h": 175, "2h": 500, "3h": 1100, "4h": 1300, "hotel": 1500}, "visiting_freq": 0, "trading_frequency": 0},
+    {"name": "Super Tax", "type": "tax", "price": 100},
+    {"name": "Mayfair", "type": "property", "color": "dark_blue", "price": 400, "owned_by": -1, "rent": {"base": 50, "1h": 200, "2h": 600, "3h": 1400, "4h": 1700, "hotel": 2000}, "visiting_freq": 0, "trading_frequency": 0}
+]
         
     def _calculate_layout(self):
         layout = [None] * 40
@@ -345,6 +346,195 @@ class MonopolyVisualizer:
         }
         return mapping[orientation]
 
+    def _draw_property_card(self, tile_index):
+        """
+        Draws a Title Deed card for the property at the given tile index.
+        Shows the card as an overlay on the board.
+        """
+        tile = self.tiles[tile_index]
+        
+        # Only draw for properties, railroads, and utilities
+        if tile["type"] not in ["property", "railroad", "utility"]:
+            return
+        
+        # --- Configuration & Setup ---
+        CARD_WIDTH = 220
+        CARD_HEIGHT = 320
+        
+        # Position card in center of the board
+        x = self.board_rect.centerx - CARD_WIDTH // 2
+        y = self.board_rect.centery - CARD_HEIGHT // 2
+        
+        # RGB Colors for the Property Groups
+        COLORS = {
+            "brown": (139, 69, 19),
+            "light_blue": (173, 216, 230),
+            "pink": (255, 105, 180),
+            "orange": (255, 165, 0),
+            "red": (255, 0, 0),
+            "yellow": (255, 255, 0),
+            "green": (0, 128, 0),
+            "dark_blue": (0, 0, 139),
+            "white": (255, 255, 255),
+            "black": (0, 0, 0),
+            "mortgage_red": (200, 0, 0),
+            "railroad_gray": (180, 180, 180),
+            "utility_cream": (245, 245, 220),
+        }
+        
+        # Helper to get house cost based on color
+        def get_house_cost(color):
+            if color in ["brown", "light_blue"]: return 50
+            if color in ["pink", "orange"]: return 100
+            if color in ["red", "yellow"]: return 150
+            if color in ["green", "dark_blue"]: return 200
+            return 0
+        
+        # Fonts
+        font_header = pygame.font.SysFont("Arial", 18, bold=True)
+        font_sub = pygame.font.SysFont("Arial", 14)
+        font_bold = pygame.font.SysFont("Arial", 14, bold=True)
+        font_small = pygame.font.SysFont("Arial", 12)
+        
+        # --- Draw Card Background ---
+        card_rect = pygame.Rect(x, y, CARD_WIDTH, CARD_HEIGHT)
+        pygame.draw.rect(self.screen, COLORS["white"], card_rect)
+        pygame.draw.rect(self.screen, COLORS["black"], card_rect, 3)
+        
+        property_name = tile["name"]
+        p_price = tile.get("price", 0)
+        
+        if tile["type"] == "property":
+            p_color = tile["color"]
+            p_rent = tile["rent"]
+            
+            # --- Draw Header (Color Box) ---
+            header_rect = pygame.Rect(x + 5, y + 5, CARD_WIDTH - 10, 50)
+            pygame.draw.rect(self.screen, COLORS.get(p_color, (100, 100, 100)), header_rect)
+            pygame.draw.rect(self.screen, COLORS["black"], header_rect, 1)
+            
+            # Draw Name inside Header
+            text_col = COLORS["white"] if p_color in ["brown", "red", "green", "dark_blue"] else COLORS["black"]
+            name_surf = font_header.render(property_name.upper(), True, text_col)
+            name_rect = name_surf.get_rect(center=header_rect.center)
+            self.screen.blit(name_surf, name_rect)
+            
+            # --- Draw Rent Details ---
+            curr_y = y + 65
+            margin_l = x + 15
+            margin_r = x + CARD_WIDTH - 15
+            
+            # Title Deed Text
+            title_surf = font_bold.render("TITLE DEED", True, COLORS["black"])
+            self.screen.blit(title_surf, title_surf.get_rect(center=(x + CARD_WIDTH // 2, curr_y)))
+            curr_y += 22
+            
+            # Helper function to draw a row of text
+            def draw_row(label, value, is_bold=False):
+                nonlocal curr_y
+                f = font_bold if is_bold else font_sub
+                lbl_s = f.render(label, True, COLORS["black"])
+                val_s = f.render(str(value), True, COLORS["black"])
+                self.screen.blit(lbl_s, (margin_l, curr_y))
+                val_rect = val_s.get_rect(topright=(margin_r, curr_y))
+                self.screen.blit(val_s, val_rect)
+                curr_y += 18
+            
+            # Rent Rows
+            draw_row("RENT", f"£{p_rent['base']}")
+            draw_row("With 1 house", f"£{p_rent['1h']}")
+            draw_row("With 2 houses", f"£{p_rent['2h']}")
+            draw_row("With 3 houses", f"£{p_rent['3h']}")
+            draw_row("With 4 houses", f"£{p_rent['4h']}")
+            curr_y += 2
+            draw_row("WITH HOTEL", f"£{p_rent['hotel']}", is_bold=True)
+            curr_y += 8
+            
+            # Separator Line
+            pygame.draw.line(self.screen, COLORS["black"], (margin_l, curr_y), (margin_r, curr_y), 1)
+            curr_y += 8
+            
+            # House/Hotel Costs
+            house_cost = get_house_cost(p_color)
+            cost_text = font_small.render(f"Houses cost £{house_cost} each", True, COLORS["black"])
+            self.screen.blit(cost_text, (margin_l, curr_y))
+            curr_y += 16
+            
+            hotel_text = font_small.render(f"Hotel £{house_cost} + 4 houses", True, COLORS["black"])
+            self.screen.blit(hotel_text, (margin_l, curr_y))
+            curr_y += 20
+            
+            # Mortgage Value
+            mortgage_val = p_price // 2
+            mort_text = font_bold.render(f"Mortgage: £{mortgage_val}", True, COLORS["mortgage_red"])
+            mort_rect = mort_text.get_rect(center=(x + CARD_WIDTH // 2, curr_y))
+            self.screen.blit(mort_text, mort_rect)
+            
+        elif tile["type"] == "railroad":
+            # Railroad card
+            header_rect = pygame.Rect(x + 5, y + 5, CARD_WIDTH - 10, 50)
+            pygame.draw.rect(self.screen, COLORS["railroad_gray"], header_rect)
+            pygame.draw.rect(self.screen, COLORS["black"], header_rect, 1)
+            
+            name_surf = font_header.render(property_name.upper(), True, COLORS["black"])
+            name_rect = name_surf.get_rect(center=header_rect.center)
+            self.screen.blit(name_surf, name_rect)
+            
+            curr_y = y + 70
+            margin_l = x + 15
+            
+            rent_info = tile.get("rent", {})
+            rents = [
+                ("1 Railroad owned", f"£{rent_info.get('1_rr', 25)}"),
+                ("2 Railroads owned", f"£{rent_info.get('2_rr', 50)}"),
+                ("3 Railroads owned", f"£{rent_info.get('3_rr', 100)}"),
+                ("4 Railroads owned", f"£{rent_info.get('4_rr', 200)}"),
+            ]
+            for label, val in rents:
+                lbl = font_sub.render(label, True, COLORS["black"])
+                self.screen.blit(lbl, (margin_l, curr_y))
+                curr_y += 16
+                v = font_bold.render(val, True, COLORS["black"])
+                self.screen.blit(v, (margin_l + 20, curr_y))
+                curr_y += 22
+            
+            # Price
+            price_text = font_bold.render(f"Price: £{p_price}", True, COLORS["black"])
+            self.screen.blit(price_text, price_text.get_rect(center=(x + CARD_WIDTH // 2, curr_y + 20)))
+            
+        elif tile["type"] == "utility":
+            # Utility card
+            header_rect = pygame.Rect(x + 5, y + 5, CARD_WIDTH - 10, 50)
+            pygame.draw.rect(self.screen, COLORS["utility_cream"], header_rect)
+            pygame.draw.rect(self.screen, COLORS["black"], header_rect, 1)
+            
+            name_surf = font_header.render(property_name.upper(), True, COLORS["black"])
+            name_rect = name_surf.get_rect(center=header_rect.center)
+            self.screen.blit(name_surf, name_rect)
+            
+            curr_y = y + 70
+            margin_l = x + 15
+            
+            info_lines = [
+                "If one Utility is owned,",
+                "rent is 4x dice roll.",
+                "",
+                "If both Utilities are owned,",
+                "rent is 10x dice roll.",
+            ]
+            for line in info_lines:
+                text = font_sub.render(line, True, COLORS["black"])
+                self.screen.blit(text, (margin_l, curr_y))
+                curr_y += 18
+            
+            # Price
+            price_text = font_bold.render(f"Price: £{p_price}", True, COLORS["black"])
+            self.screen.blit(price_text, price_text.get_rect(center=(x + CARD_WIDTH // 2, curr_y + 30)))
+        
+        # Draw "Click to close" text at bottom
+        close_text = font_small.render("Click anywhere to close", True, (100, 100, 100))
+        self.screen.blit(close_text, close_text.get_rect(center=(x + CARD_WIDTH // 2, y + CARD_HEIGHT - 15)))
+
     # ------------------------------------------------------------------
     # Drawing helpers
     # ------------------------------------------------------------------
@@ -515,6 +705,11 @@ class MonopolyVisualizer:
         self._draw_highlight()
         self._draw_players()
         self._draw_info_panel()
+        
+        # Draw property card overlay if showing
+        if self.show_property_card:
+            self._draw_property_card(self.selected_tile)
+        
         pygame.display.flip()
     
     def _get_player_color(self, player_id):
@@ -762,6 +957,11 @@ class MonopolyVisualizer:
         return y
 
     def _handle_button_click(self, pos):
+        # Close property card if showing
+        if self.show_property_card:
+            self.show_property_card = False
+            return
+        
         # Check +/- buttons for sell count
         if hasattr(self, 'minus_rect') and self.minus_rect.collidepoint(pos):
             self.sell_count = max(0, self.sell_count - 1)
@@ -791,6 +991,10 @@ class MonopolyVisualizer:
         self._push_message(f"P{current_player + 1} rolled {dice_total} and landed on {tile['name']}")
         self.awaiting_roll = False
         self.awaiting_decision = True
+        
+        # Show property card if landed on a property, railroad, or utility
+        if tile["type"] in ["property", "railroad", "utility"]:
+            self.show_property_card = True
 
     def _handle_buy(self):
         if not self.awaiting_decision:
