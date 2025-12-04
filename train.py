@@ -2,6 +2,17 @@ from rl import train_dqn
 import os
 import torch
 
+# ================================================================
+#  Dynamic Pricing Configuration
+# ================================================================
+# Set this to your trained market bot path to enable dynamic pricing
+# Example: "models/best_model/best_model.zip"
+MARKET_BOT_PATH = "models/best_model/best_model.zip"  # Change to None for static prices
+MARKET_UPDATE_FREQUENCY = 5  # Update prices every 5 turns
+
+# ================================================================
+#  Train DQN Agent
+# ================================================================
 # Train with 2 players to match the human vs AI game setup
 model, rewards = train_dqn(
     episodes=500,
@@ -13,6 +24,8 @@ model, rewards = train_dqn(
     epsilon_decay=0.995,
     learning_rate=1e-3,
     num_players=2,  # Match the human vs AI game (2 players)
+    market_bot_path=MARKET_BOT_PATH,  # Enable dynamic pricing with market bot
+    market_update_frequency=MARKET_UPDATE_FREQUENCY,
 )
 
 # Save trained policy for gameplay
