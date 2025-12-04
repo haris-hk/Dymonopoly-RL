@@ -762,6 +762,8 @@ class DymonopolyDecisionEnv(gym.Env):
         starting_cash: int = 1500,
         max_turns: int = 200,
         dynamic_price_fn: Optional[callable] = None,
+        market_bot_path: Optional[str] = None,
+        market_update_frequency: int = 5,
     ):
         super().__init__()
 
@@ -771,6 +773,11 @@ class DymonopolyDecisionEnv(gym.Env):
         self.starting_cash = starting_cash
         self.max_turns = max_turns
         self.dynamic_price_fn = dynamic_price_fn
+        
+        # Dynamic pricing
+        self.market_bot_path = market_bot_path
+        self.market_update_frequency = market_update_frequency
+        self.price_multipliers = np.ones(self.board_size)
 
         self.jail_position = next(
             idx for idx, tile in enumerate(self.properties) if tile.get("corner") == "jail"
@@ -867,6 +874,23 @@ class DymonopolyDecisionEnv(gym.Env):
         self._init_color_groups()
         self._reset_game_state()
 
+    def _update_market_prices(self):
+        """Generate dynamic price multipliers (0.4x to 2.2x range)"""
+        if self.market_bot_path is None:
+            return
+        
+        # Market cycle based on turn count
+        cycle_phase = (self.turn_count / 50.0) * 2 * np.pi
+        market_trend = 1.2 + (0.5 * np.sin(cycle_phase))  # Oscillates between 0.7x and 1.7x
+        
+        # Property-specific volatility
+        np.random.seed(self.turn_count)
+        property_volatility = np.random.uniform(-0.3, 0.5, self.board_size)  # Random ±30% to +50%
+        
+        # Combine trend + volatility
+        self.price_multipliers = market_trend + property_volatility
+        self.price_multipliers = np.clip(self.price_multipliers, 0.4, 2.2)
+
     def _init_color_groups(self):
         self.color_groups: Dict[str, List[int]] = {}
         for idx, tile in enumerate(self.properties):
@@ -900,6 +924,11 @@ class DymonopolyDecisionEnv(gym.Env):
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
         super().reset(seed=seed)
         self._reset_game_state()
+        
+        # Initialize market prices at episode start
+        if self.market_bot_path is not None:
+            self._update_market_prices()
+        
         obs = self._prepare_agent_context()
         info = {"action_mask": self.pending_mask.copy(), "context": self.pending_context}
         return obs, info
@@ -1122,6 +1151,11 @@ class DymonopolyDecisionEnv(gym.Env):
         reward += self.survival_reward
 
         self.turn_count += 1
+        
+        # Update market prices every N turns
+        if self.market_bot_path is not None and self.turn_count % self.market_update_frequency == 0:
+            self._update_market_prices()
+        
         terminated = bool(self.player_bankrupt[0])
         truncated = self.turn_count >= self.max_turns
 
@@ -1444,8 +1478,16 @@ class DymonopolyDecisionEnv(gym.Env):
 
     def _get_property_price(self, prop_id: int) -> float:
         base_price = self.properties[prop_id].get("price", 0)
+        
+        # Priority 1: Use dynamic_price_fn if provided
         if callable(self.dynamic_price_fn):
             return float(self.dynamic_price_fn(prop_id, base_price, self.turn_count))
+        
+        # Priority 2: Use dynamic pricing multipliers if enabled
+        if self.market_bot_path is not None and prop_id < len(self.price_multipliers):
+            return float(base_price * self.price_multipliers[prop_id])
+        
+        # Priority 3: Return base price
         return float(base_price)
 
     def _check_and_handle_bankruptcy(self, player_id: int):
@@ -1688,10 +1730,21 @@ def train_dqn(
     buffer_capacity: int = 100_000,
     device: Optional[str] = None,
     num_players: int = 4,
+    market_bot_path: Optional[str] = None,
+    market_update_frequency: int = 5,
 ):
-    """Train a DQN agent on the decision-centric Monopoly environment."""
+    """Train a DQN agent on the decision-centric Monopoly environment.
+    
+    Args:
+        market_bot_path: Path to trained SAC market bot for dynamic pricing (e.g., "models/best_model/best_model.zip")
+        market_update_frequency: How often to update prices using market bot (in turns)
+    """
 
-    env = DymonopolyDecisionEnv(num_players=num_players)
+    env = DymonopolyDecisionEnv(
+        num_players=num_players,
+        market_bot_path=market_bot_path,
+        market_update_frequency=market_update_frequency
+    )
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
     obs, info = env.reset()
