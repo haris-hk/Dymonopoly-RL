@@ -5,7 +5,6 @@ from rl import DymonopolyEnv, DymonopolyDecisionEnv
 import random
 from gymnasium import spaces
 
-# Try to import SAC model components (optional - for market pricing)
 try:
     from stable_baselines3 import SAC
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -18,7 +17,7 @@ except OSError as e:
     print(f"[Market Model] SAC loading error (possibly PyTorch DLL issue): {e}")
     SAC_AVAILABLE = False
 
-# Try to import DQN model components (for AI player)
+
 try:
     import torch
     import torch.nn as nn
