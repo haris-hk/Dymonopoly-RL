@@ -660,8 +660,8 @@ class DymonopolyEnv(gym.Env):
             print("=" * 80)
             
             # Turn info
-            print(f"\n🎲 Turn: {self.turn_counter}")
-            print(f"{'✅ PRICES UPDATED THIS TURN!' if self.turn_counter % self.price_update_interval == 0 else '⏳ Next price update in ' + str(self.price_update_interval - (self.turn_counter % self.price_update_interval)) + ' turns'}")
+            print(f"\n Turn: {self.turn_counter}")
+            print(f"{' PRICES UPDATED THIS TURN!' if self.turn_counter % self.price_update_interval == 0 else '⏳ Next price update in ' + str(self.price_update_interval - (self.turn_counter % self.price_update_interval)) + ' turns'}")
             
             # Player status
             print(f"\n{'PLAYER STATUS':^80}")
@@ -673,8 +673,8 @@ class DymonopolyEnv(gym.Env):
                 cash = self.player_cash[i]
                 owned_props = np.sum(self.property_owners == i)
                 position = self.player_positions[i] if hasattr(self, 'player_positions') else 0
-                status = "💀 Bankrupt" if self.players[i][0]["bankrupt"] else "✅ Active"
-                current = "👉 " if i == self.current_player else "   "
+                status = " Bankrupt" if self.players[i][0]["bankrupt"] else " Active"
+                current = " " if i == self.current_player else "   "
                 
                 print(f"{current}Player {i+1:<3} ${cash:<14.2f} {owned_props:<15} {position:<15} {status:<15}")
             
@@ -694,12 +694,12 @@ class DymonopolyEnv(gym.Env):
             total_ownable = int(np.sum(ownable_mask))
             ownership_pct = (owned_properties / total_ownable * 100) if total_ownable > 0 else 0
             
-            print(f"📊 Average Property Price: ${avg_price:.2f} (Base: ${avg_base:.2f})")
-            print(f"📈 Market Change: {price_change_pct:+.2f}%")
-            print(f"💰 Total Market Cash: ${np.sum(self.player_cash):.2f}")
-            print(f"🏠 Properties Owned: {owned_properties}/{total_ownable} ({ownership_pct:.1f}%)")
-            print(f"🔄 Total Trades: {total_trades}")
-            print(f"👣 Total Visits: {total_visits}")
+            print(f" Average Property Price: ${avg_price:.2f} (Base: ${avg_base:.2f})")
+            print(f" Market Change: {price_change_pct:+.2f}%")
+            print(f" Total Market Cash: ${np.sum(self.player_cash):.2f}")
+            print(f" Properties Owned: {owned_properties}/{total_ownable} ({ownership_pct:.1f}%)")
+            print(f" Total Trades: {total_trades}")
+            print(f" Total Visits: {total_visits}")
             
             # Property sample (show top 5 most active)
             print(f"\n{'TOP 5 MOST ACTIVE PROPERTIES':^80}")
@@ -741,10 +741,10 @@ class DymonopolyEnv(gym.Env):
                 
                 total_reward = self.reward_function()
                 
-                print(f"💧 Liquidity (Market Activity):     {market_activity:+.4f} × {self.market_activity_weight} = {market_activity * self.market_activity_weight:+.4f}")
-                print(f"📉 Volatility Penalty:             {-volatility_penalty:+.4f} × {self.volatility_weight} = {-volatility_penalty * self.volatility_weight:+.4f}")
-                print(f"🏪 Market Depth:                   {market_depth:+.4f} × {self.market_depth_weight} = {market_depth * self.market_depth_weight:+.4f}")
-                print(f"⚔️  Competition Factor:             {monopoly_competition:+.4f} × {self.monopoly_competition_weight} = {monopoly_competition * self.monopoly_competition_weight:+.4f}")
+                print(f" Liquidity (Market Activity):     {market_activity:+.4f} × {self.market_activity_weight} = {market_activity * self.market_activity_weight:+.4f}")
+                print(f" Volatility Penalty:             {-volatility_penalty:+.4f} × {self.volatility_weight} = {-volatility_penalty * self.volatility_weight:+.4f}")
+                print(f" Market Depth:                   {market_depth:+.4f} × {self.market_depth_weight} = {market_depth * self.market_depth_weight:+.4f}")
+                print(f"  Competition Factor:             {monopoly_competition:+.4f} × {self.monopoly_competition_weight} = {monopoly_competition * self.monopoly_competition_weight:+.4f}")
                 print("-" * 80)
                 print(f"{'TOTAL REWARD:':<35} {total_reward:+.4f}")
             
