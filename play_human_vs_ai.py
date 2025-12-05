@@ -23,33 +23,33 @@ def print_game_state(env: DymonopolyDecisionEnv, current_player_id: int, show_fu
         pos = env.player_positions[pid]
         tile_name = env.properties[pos]['name']
         net_worth = env._player_net_worth(pid)
-        jail_status = "🔒 IN JAIL" if env.player_in_jail[pid] else ""
-        bankrupt_status = "💀 BANKRUPT" if env.player_bankrupt[pid] else ""
+        jail_status = " IN JAIL" if env.player_in_jail[pid] else ""
+        bankrupt_status = "BANKRUPT" if env.player_bankrupt[pid] else ""
         
         player_type = "YOU (Human)" if pid == 0 else "AI Agent"
-        marker = "👤" if pid == 0 else "🤖"
+        marker = "👱" if pid == 0 else "🤖"
         is_current = ">>> " if pid == current_player_id else "    "
         
         status = bankrupt_status or jail_status or "ACTIVE"
         
         print(f"{is_current}{marker} Player {pid + 1} ({player_type})")
-        print(f"    💰 Cash: ${cash:.0f} | 📊 Net Worth: ${net_worth:.0f} | Status: {status}")
-        print(f"    📍 Position ({pos}): {tile_name}")
-        print(f"    🎫 Jail Cards: {env.player_jail_cards[pid]}")
+        print(f"    Cash: ${cash:.0f} | Net Worth: ${net_worth:.0f} | Status: {status}")
+        print(f"   Position ({pos}): {tile_name}")
+        print(f"   Jail Cards: {env.player_jail_cards[pid]}")
         
         # Show owned properties
         owned_props = env._select_properties_owned(pid)
         if owned_props:
-            print(f"    🏠 Owned Properties ({len(owned_props)}):")
+            print(f"   Owned Properties ({len(owned_props)}):")
             for idx in owned_props:
                 prop = env.properties[idx]
                 houses = env.property_houses[idx]
                 
                 # Determine development status
                 if houses == 5:
-                    dev = "🏨 Hotel"
+                    dev = " Hotel"
                 elif houses > 0:
-                    dev = "🏠" * houses
+                    dev = "" * houses
                 else:
                     dev = "No development"
                 
@@ -67,17 +67,17 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
     
     while management_active:
         print("\n" + "=" * 70)
-        print("🏠 ASSET MANAGEMENT MENU")
+        print(" ASSET MANAGEMENT MENU")
         print("=" * 70)
         cash = env.player_cash[player_id]
-        print(f"💰 Current Cash: ${cash:.0f}")
+        print(f" Current Cash: ${cash:.0f}")
         
         # Determine available options
         buildable = env._get_buildable_monopolies(player_id)
         sellable_buildings = env._get_sellable_buildings(player_id)
         sellable_properties = env._get_all_owned_properties(player_id)
         
-        print("\n📋 Management Options:")
+        print("\n Management Options:")
         print("   [1] Build House/Hotel")
         print("   [2] Sell House/Hotel")
         print("   [3] Sell Property")
@@ -85,7 +85,7 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
         print("-" * 70)
         
         try:
-            choice = input("\n🎯 Select option: ").strip()
+            choice = input("\nSelect option: ").strip()
             
             if choice == "":
                 continue
@@ -95,10 +95,10 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
             # Build House/Hotel
             if option == 1:
                 if not buildable:
-                    print("❌ Cannot build: No complete color sets or insufficient funds.")
+                    print("Cannot build: No complete color sets or insufficient funds.")
                     continue
                 
-                print("\n🏗️  BUILDABLE PROPERTIES:")
+                print("\n  BUILDABLE PROPERTIES:")
                 print("-" * 70)
                 for i, prop_id in enumerate(buildable, 1):
                     prop = env.properties[prop_id]
@@ -110,7 +110,7 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
                 print("-" * 70)
                 
                 try:
-                    build_choice = input("\n🎯 Select property to build on (or Enter to cancel): ").strip()
+                    build_choice = input("\nSelect property to build on (or Enter to cancel): ").strip()
                     if build_choice == "":
                         continue
                     
@@ -119,22 +119,22 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
                         prop_id = buildable[build_idx]
                         result = env._handle_build_for_player({}, player_id, prop_id)
                         if result > 0:
-                            print(f"✅ Successfully built on {env.properties[prop_id]['name']}!")
+                            print(f"Successfully built on {env.properties[prop_id]['name']}!")
                             actions_taken = True
                         else:
-                            print(f"❌ Failed to build on {env.properties[prop_id]['name']}.")
+                            print(f"Failed to build on {env.properties[prop_id]['name']}.")
                     else:
-                        print("❌ Invalid selection.")
+                        print(" Invalid selection.")
                 except ValueError:
-                    print("❌ Invalid input.")
+                    print(" Invalid input.")
             
             # Sell Building
             elif option == 2:
                 if not sellable_buildings:
-                    print("❌ No houses or hotels to sell.")
+                    print("No houses or hotels to sell.")
                     continue
                 
-                print("\n💵 SELLABLE BUILDINGS:")
+                print("\n SELLABLE BUILDINGS:")
                 print("-" * 70)
                 for i, prop_id in enumerate(sellable_buildings, 1):
                     prop = env.properties[prop_id]
@@ -146,7 +146,7 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
                 print("-" * 70)
                 
                 try:
-                    sell_choice = input("\n🎯 Select property to sell building from (or Enter to cancel): ").strip()
+                    sell_choice = input("\nSelect property to sell building from (or Enter to cancel): ").strip()
                     if sell_choice == "":
                         continue
                     
@@ -155,22 +155,22 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
                         prop_id = sellable_buildings[sell_idx]
                         result = env._handle_sell_building_for_player({}, player_id, prop_id)
                         if result > 0:
-                            print(f"✅ Successfully sold building from {env.properties[prop_id]['name']}!")
+                            print(f"Successfully sold building from {env.properties[prop_id]['name']}!")
                             actions_taken = True
                         else:
-                            print(f"❌ Failed to sell building from {env.properties[prop_id]['name']}.")
+                            print(f"Failed to sell building from {env.properties[prop_id]['name']}.")
                     else:
-                        print("❌ Invalid selection.")
+                        print(" Invalid selection.")
                 except ValueError:
-                    print("❌ Invalid input.")
+                    print(" Invalid input.")
             
             # Sell Property
             elif option == 3:
                 if not sellable_properties:
-                    print("❌ No properties to sell.")
+                    print("No properties to sell.")
                     continue
                 
-                print("\n💵 SELLABLE PROPERTIES:")
+                print("\n SELLABLE PROPERTIES:")
                 print("-" * 70)
                 for i, prop_id in enumerate(sellable_properties, 1):
                     prop = env.properties[prop_id]
@@ -189,7 +189,7 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
                 print("-" * 70)
                 
                 try:
-                    sell_choice = input("\n🎯 Select property to sell (or Enter to cancel): ").strip()
+                    sell_choice = input("\nSelect property to sell (or Enter to cancel): ").strip()
                     if sell_choice == "":
                         continue
                     
@@ -198,26 +198,26 @@ def asset_management_menu(env: DymonopolyDecisionEnv, player_id: int) -> bool:
                         prop_id = sellable_properties[sell_idx]
                         result = env._handle_sell_property_for_player({}, player_id, prop_id)
                         if result > 0:
-                            print(f"✅ Successfully sold {env.properties[prop_id]['name']}!")
+                            print(f"Successfully sold {env.properties[prop_id]['name']}!")
                             actions_taken = True
                         else:
-                            print(f"❌ Failed to sell {env.properties[prop_id]['name']}.")
+                            print(f"Failed to sell {env.properties[prop_id]['name']}.")
                     else:
-                        print("❌ Invalid selection.")
+                        print(" Invalid selection.")
                 except ValueError:
-                    print("❌ Invalid input.")
+                    print(" Invalid input.")
             
             # Done
             elif option == 4:
                 management_active = False
             
             else:
-                print("❌ Invalid option. Please select 1-4.")
+                print("Invalid option. Please select 1-4.")
         
         except ValueError:
-            print("❌ Invalid input. Please enter a number.")
+            print(" Invalid input. Please enter a number.")
         except (EOFError, KeyboardInterrupt):
-            print("\n\n⚠️  Returning to main turn...")
+            print("\n\n  Returning to main turn...")
             management_active = False
     
     return actions_taken
@@ -230,28 +230,28 @@ def get_human_action(env: DymonopolyDecisionEnv, player_id: int, info: Dict) -> 
     valid_actions = [i for i, m in enumerate(mask) if m == 1]
     
     if not valid_actions:
-        print("⚠️  No valid actions available. Ending turn.")
+        print("  No valid actions available. Ending turn.")
         return env.END_TURN
     
     # Display context information
     ctx_type = ctx.get("type", "decision")
-    print(f"\n🎲 DECISION TYPE: {ctx_type.upper()}")
+    print(f"\n DECISION TYPE: {ctx_type.upper()}")
     print("-" * 70)
     
     if ctx_type == "decision" and ctx.get("buy_target") is not None:
         prop_id = ctx["buy_target"]
         prop = env.properties[prop_id]
         price = ctx.get("buy_price", 0)
-        print(f"🏢 Landed on: {prop['name']} (${price:.0f})")
+        print(f" Landed on: {prop['name']} (${price:.0f})")
         print(f"   Type: {prop.get('type', 'property')} | Color: {prop.get('color', 'N/A')}")
     
     if ctx_type == "jail_entry":
-        print("🚔 You've been sent to JAIL!")
+        print(" You've been sent to JAIL!")
         print(f"   Fine: $50 | Jail Cards Available: {env.player_jail_cards[player_id]}")
     
     # For decision context, offer asset management option
     if ctx_type == "decision":
-        print(f"\n📋 QUICK ACTIONS:")
+        print(f"\n QUICK ACTIONS:")
         print("-" * 70)
         print(f"   [0] End Turn")
         if ctx.get("buy_target") is not None:
@@ -261,10 +261,10 @@ def get_human_action(env: DymonopolyDecisionEnv, player_id: int, info: Dict) -> 
         
         while True:
             try:
-                choice = input(f"\n🎯 Player {player_id + 1}, enter choice: ").strip().upper()
+                choice = input(f"\n Player {player_id + 1}, enter choice: ").strip().upper()
                 
                 if choice == "":
-                    print("⚠️  No input provided.")
+                    print("  No input provided.")
                     continue
                 
                 # Manage assets
@@ -281,17 +281,17 @@ def get_human_action(env: DymonopolyDecisionEnv, player_id: int, info: Dict) -> 
                 elif action == 1 and ctx.get("buy_target") is not None:
                     return env.BUY_PROPERTY
                 else:
-                    print(f"❌ Invalid action.")
+                    print(f" Invalid action.")
             
             except ValueError:
-                print("❌ Invalid input. Enter a number or 'M' for management.")
+                print(" Invalid input. Enter a number or 'M' for management.")
             except (EOFError, KeyboardInterrupt):
-                print("\n\n⚠️  Game interrupted by user.")
+                print("\n\n  Game interrupted by user.")
                 sys.exit(0)
     
     # For non-decision contexts (jail, etc), show all valid actions
     else:
-        print(f"\n📋 AVAILABLE ACTIONS:")
+        print(f"\n AVAILABLE ACTIONS:")
         print("-" * 70)
         
         action_meanings = env.action_meanings
@@ -309,7 +309,7 @@ def get_human_action(env: DymonopolyDecisionEnv, player_id: int, info: Dict) -> 
         # Get user input
         while True:
             try:
-                choice = input(f"\n🎯 Player {player_id + 1}, enter action number: ").strip()
+                choice = input(f"\n Player {player_id + 1}, enter action number: ").strip()
                 
                 if choice == "":
                     print("⚠️  No input provided. Please enter an action number.")
@@ -320,12 +320,12 @@ def get_human_action(env: DymonopolyDecisionEnv, player_id: int, info: Dict) -> 
                 if action in valid_actions:
                     return action
                 else:
-                    print(f"❌ Invalid action {action}. Please choose from the available actions.")
+                    print(f" Invalid action {action}. Please choose from the available actions.")
             
             except ValueError:
-                print("❌ Invalid input. Please enter a number.")
+                print(" Invalid input. Please enter a number.")
             except (EOFError, KeyboardInterrupt):
-                print("\n\n⚠️  Game interrupted by user.")
+                print("\n\n  Game interrupted by user.")
                 sys.exit(0)
 
 
@@ -344,7 +344,7 @@ def ai_take_management_actions(env: DymonopolyDecisionEnv, player_id: int) -> bo
             if result > 0:
                 prop_name = env.properties[prop_id]['name']
                 houses = env.property_houses[prop_id]
-                print(f"   🏗️  AI built on {prop_name} (now has {houses} house(s))")
+                print(f"    AI built on {prop_name} (now has {houses} house(s))")
                 actions_taken = True
                 # Build one at a time to be strategic
                 break
@@ -357,7 +357,7 @@ def ai_take_management_actions(env: DymonopolyDecisionEnv, player_id: int) -> bo
             result = env._handle_sell_building_for_player({}, player_id, prop_id)
             if result > 0:
                 prop_name = env.properties[prop_id]['name']
-                print(f"   💵 AI sold building from {prop_name} (low on cash)")
+                print(f"    AI sold building from {prop_name} (low on cash)")
                 actions_taken = True
     
     return actions_taken
@@ -406,12 +406,12 @@ def play_human_vs_ai(
     
     # Check if model exists
     if not os.path.exists(model_path):
-        print(f"❌ ERROR: Model not found at {model_path}")
+        print(f"ERROR: Model not found at {model_path}")
         print("Please train a model first using train.py")
         return
     
     # Initialize environment with 2 players
-    print("🎮 Initializing Monopoly: Human vs AI")
+    print(" Initializing Monopoly: Human vs AI")
     print("=" * 70)
     env = DymonopolyDecisionEnv(num_players=2, max_turns=max_turns)
     
@@ -424,16 +424,16 @@ def play_human_vs_ai(
     try:
         policy_net.load_state_dict(torch.load(model_path, map_location=device))
         policy_net.eval()
-        print(f"✅ Loaded trained model from: {model_path}")
+        print(f"Loaded trained model from: {model_path}")
     except Exception as e:
-        print(f"❌ ERROR loading model: {e}")
+        print(f" ERROR loading model: {e}")
         return
     
-    print(f"🎲 Starting game with max {max_turns} turns")
-    print(f"👤 Player 1: HUMAN")
+    print(f" Starting game with max {max_turns} turns")
+    print(f"👱 Player 1: HUMAN")
     print(f"🤖 Player 2: AI Agent (epsilon={ai_epsilon})")
     print("=" * 70)
-    input("\n⏸️  Press ENTER to start the game...")
+    input("\n⏸ Press ENTER to start the game...")
     
     # Initialize game
     obs, info = env.reset()
@@ -468,9 +468,9 @@ def play_human_vs_ai(
             
         else:
             # AI player
-            print(f"\n{'🔸' * 35}")
+            print(f"\n{'-' * 35}")
             print(f"{'  ' * 10}🤖 AI's TURN {'  ' * 10}")
-            print(f"{'🔸' * 35}\n")
+            print(f"{'-' * 35}\n")
             
             action = get_ai_action(
                 policy_net,
@@ -484,7 +484,7 @@ def play_human_vs_ai(
             
             action_name = env.action_meanings[action] if action < len(env.action_meanings) else f"action_{action}"
             print(f"🤖 AI chose: [{action}] {action_name}")
-            input("\n⏸️  Press ENTER to continue...")
+            input("\n⏸  Press ENTER to continue...")
         
         # Apply action
         pre_worth = env._player_net_worth(current_player)
@@ -495,7 +495,7 @@ def play_human_vs_ai(
         env._check_and_handle_bankruptcy(current_player)
         post_worth = env._player_net_worth(current_player)
         
-        print(f"\n📊 Turn Result:")
+        print(f"\n Turn Result:")
         print(f"   Action: {env.action_meanings[action] if action < len(env.action_meanings) else f'action_{action}'}")
         print(f"   Net Worth Change: {post_worth - pre_worth:+.2f}")
         
@@ -514,32 +514,32 @@ def play_human_vs_ai(
         truncated = env.turn_count >= max_turns
     
     # Game over - display results
-    print("\n" + "🏁" * 35)
+    print("\n" + "-" * 35)
     print(f"{'  ' * 12}GAME OVER{'  ' * 12}")
-    print("🏁" * 35)
+    print("-" * 35)
     
     if terminated:
         # Find winner (non-bankrupt player)
         for pid in range(env.num_players):
             if not env.player_bankrupt[pid]:
-                player_type = "👤 HUMAN" if pid == 0 else "🤖 AI"
+                player_type = "👱 HUMAN" if pid == 0 else "🤖 AI"
                 net_worth = env._player_net_worth(pid)
-                print(f"\n🎉 WINNER: Player {pid + 1} ({player_type})")
+                print(f"\n WINNER: Player {pid + 1} ({player_type})")
                 print(f"   Final Net Worth: ${net_worth:.2f}")
                 break
     elif truncated:
         # Find player with highest net worth
         net_worths = [env._player_net_worth(i) for i in range(env.num_players)]
         winner_id = np.argmax(net_worths)
-        player_type = "👤 HUMAN" if winner_id == 0 else "🤖 AI"
-        print(f"\n⏱️  Game reached max turns ({max_turns})")
-        print(f"🎉 WINNER by Net Worth: Player {winner_id + 1} ({player_type})")
+        player_type = "👱 HUMAN" if winner_id == 0 else "🤖 AI"
+        print(f"\n  Game reached max turns ({max_turns})")
+        print(f" WINNER by Net Worth: Player {winner_id + 1} ({player_type})")
         print(f"   Final Net Worth: ${net_worths[winner_id]:.2f}")
         
-        print(f"\n📊 Final Standings:")
+        print(f"\n Final Standings:")
         for pid in range(env.num_players):
-            player_type = "👤 HUMAN" if pid == 0 else "🤖 AI"
-            status = "💀 BANKRUPT" if env.player_bankrupt[pid] else "ACTIVE"
+            player_type = "👱 HUMAN" if pid == 0 else "🤖 AI"
+            status = " BANKRUPT" if env.player_bankrupt[pid] else "ACTIVE"
             print(f"   Player {pid + 1} ({player_type}): ${net_worths[pid]:.2f} - {status}")
     
     print("\n" + "=" * 70)
@@ -565,8 +565,8 @@ if __name__ == "__main__":
             ai_epsilon=AI_EPSILON
         )
     except KeyboardInterrupt:
-        print("\n\n⚠️  Game interrupted by user. Goodbye!")
+        print("\n\n  Game interrupted by user. Goodbye!")
     except Exception as e:
-        print(f"\n❌ An error occurred: {e}")
+        print(f"\n An error occurred: {e}")
         import traceback
         traceback.print_exc()
