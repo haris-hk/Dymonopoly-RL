@@ -544,13 +544,13 @@ class DymonopolyEnv(gym.Env):
                 multiplier = 1.2 + 0.8 * raw_action
                 self.current_prices[prop_id] *= multiplier
                 
-                # Keep prices reasonable (50%-200% of baseline)
+                
                 min_price = self.base_prices[prop_id] * 0.4
                 max_price = self.base_prices[prop_id] * 2.2
                 self.current_prices[prop_id] = np.clip(self.current_prices[prop_id], min_price, max_price)
             
             self._sync_property_dicts()
-            reward = self.reward_function()  # Your existing reward function
+            reward = self.reward_function()  
         
         obs = self._get_obs()
         terminated = self.game_end_cond()

@@ -18,6 +18,34 @@ except OSError as e:
     print(f"[Market Model] SAC loading error (possibly PyTorch DLL issue): {e}")
     SAC_AVAILABLE = False
 
+# Try to import DQN model components (for AI player)
+try:
+    import torch
+    import torch.nn as nn
+    DQN_AVAILABLE = True
+except ImportError as e:
+    print(f"[AI Model] PyTorch not available: {e}")
+    DQN_AVAILABLE = False
+except OSError as e:
+    print(f"[AI Model] PyTorch loading error: {e}")
+    DQN_AVAILABLE = False
+
+
+# QNetwork class for DQN (mirrors rl.py definition)
+class QNetwork(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, output_dim),
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
 # Game states
 class GameState:
     AWAITING_ROLL = "awaiting_roll"
@@ -143,9 +171,11 @@ class MonopolyVisualizer:
         self.layout = self._calculate_layout()
         self.max_players = 2  # Human vs AI
         
-        # For DecisionEnv compatibility
+        # For DecisionEnv compatibility - ensure all players start at GO (position 0)
         if self.using_decision_env:
-            self.player_positions = self.env.player_positions.tolist()
+            # Force reset positions to 0 (GO) for a fresh game
+            self.env.player_positions = np.zeros(self.max_players, dtype=np.int32)
+            self.player_positions = [0] * self.max_players
         else:
             self.env.num_players = self.max_players
             self.player_positions = [0] * self.max_players
@@ -189,6 +219,10 @@ class MonopolyVisualizer:
         self.action_buttons = self._create_action_buttons()
         self.sell_count = 0  # Counter for sell building
         
+        # Plus/Minus button rects for sell building counter
+        self.plus_rect = pygame.Rect(0, 0, 26, 30)
+        self.minus_rect = pygame.Rect(0, 0, 26, 30)
+        
         # ========== MARKET PRICE OVERLAY ==========
         self.show_market_overlay = False
         self.market_overlay_start_time = 0
@@ -223,6 +257,40 @@ class MonopolyVisualizer:
                 print(f"[Market Model] Model not found at {model_path}")
         else:
             print("[Market Model] SAC not available - market prices will remain static")
+        
+        # ========== AI PLAYER MODEL (DQN) ==========
+        # Load trained DQN model for AI player decisions
+        self.ai_policy = None
+        self.ai_device = None
+        self.ai_action_delay = 1000  # ms delay between AI actions for visibility
+        self.ai_last_action_time = 0
+        self.ai_thinking = False  # Flag to show AI is "thinking"
+        self.ai_actions_this_turn = 0  # Counter to limit actions per turn
+        self.ai_max_actions_per_turn = 2  # Max actions before auto end turn (buy + maybe build)
+        
+        if DQN_AVAILABLE:
+            dqn_model_path = os.path.join(os.path.dirname(__file__), "models", "best_model", "dqn_policy.pt")
+            
+            if os.path.exists(dqn_model_path):
+                try:
+                    self.ai_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    # Calculate network dimensions
+                    input_dim = self.env.flat_observation_size
+                    output_dim = self.env.action_space.n
+                    
+                    self.ai_policy = QNetwork(input_dim, output_dim).to(self.ai_device)
+                    self.ai_policy.load_state_dict(torch.load(dqn_model_path, map_location=self.ai_device))
+                    self.ai_policy.eval()
+                    print(f"[AI Model] DQN policy loaded successfully! (input={input_dim}, output={output_dim})")
+                except Exception as e:
+                    print(f"[AI Model] Failed to load DQN: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ai_policy = None
+            else:
+                print(f"[AI Model] Model not found at {dqn_model_path}")
+        else:
+            print("[AI Model] PyTorch not available - AI will use random actions")
     
     def _make_dummy_market_env(self):
         """Create a dummy market env for VecNormalize compatibility."""
@@ -354,6 +422,311 @@ class MonopolyVisualizer:
             self.market_price_changes = sorted(price_changes, key=lambda x: abs(x[3]), reverse=True)[:8]
             self.show_market_overlay = True
             self.market_overlay_start_time = pygame.time.get_ticks()
+
+    # ========== AI PLAYER METHODS ==========
+    
+    def _get_ai_action_mask(self):
+        """Build action mask for AI player based on current game state."""
+        if not self.using_decision_env:
+            return np.ones(125, dtype=np.float32)
+        
+        mask = np.zeros(self.env.action_space.n, dtype=np.float32)
+        current_player = self._get_current_player()
+        
+        # End turn is always valid
+        mask[0] = 1.0  # END_TURN
+        
+        # Buy property - only if on purchasable, unowned tile with enough cash
+        pos = self.player_positions[current_player]
+        tile = self.tiles[pos]
+        if tile["type"] in ["property", "railroad", "utility"]:
+            owner = self._get_property_owner(pos)
+            price = tile.get("price", 0)
+            cash = self._get_player_cash(current_player)
+            if owner == -1 and cash >= price:
+                mask[1] = 1.0  # BUY_PROPERTY
+        
+        # Jail actions
+        if self.using_decision_env and self.env.player_in_jail[current_player]:
+            mask[2] = 1.0  # PAY_JAIL_FINE (if has $50)
+            if self.env.player_jail_cards[current_player] > 0:
+                mask[3] = 1.0  # USE_JAIL_CARD
+            mask[4] = 1.0  # ACCEPT_JAIL (skip turn)
+        
+        # Build actions (indices 5-44 for tiles 0-39)
+        build_offset = 5
+        for tile_idx in range(40):
+            if self._can_build_on_tile(current_player, tile_idx):
+                mask[build_offset + tile_idx] = 1.0
+        
+        # Sell building actions (indices 45-84 for tiles 0-39)
+        sell_building_offset = 45
+        for tile_idx in range(40):
+            if self._can_sell_building_on_tile(current_player, tile_idx):
+                mask[sell_building_offset + tile_idx] = 1.0
+        
+        # Sell property actions (indices 85-124 for tiles 0-39)
+        sell_property_offset = 85
+        for tile_idx in range(40):
+            if self._can_sell_property(current_player, tile_idx):
+                mask[sell_property_offset + tile_idx] = 1.0
+        
+        return mask
+    
+    def _get_ai_observation(self):
+        """Build flattened observation for AI model."""
+        if not self.using_decision_env:
+            return np.zeros(self.env.flat_observation_size, dtype=np.float32)
+        
+        obs = self.env._get_obs()
+        return self.env.flatten_observation(obs)
+    
+    def _can_build_on_tile(self, player_id, tile_idx):
+        """Check if player can build on a tile."""
+        if not self.using_decision_env:
+            return False
+        
+        tile = self.tiles[tile_idx]
+        if tile.get("type") != "property":
+            return False
+        
+        owner = self._get_property_owner(tile_idx)
+        if owner != player_id:
+            return False
+        
+        houses = self._get_property_houses(tile_idx)
+        if houses >= 5:  # Max houses (hotel)
+            return False
+        
+        # Check if player owns all properties in color group
+        color = tile.get("color")
+        if not self._owns_color_group(player_id, color):
+            return False
+        
+        # Check if player has enough cash
+        house_cost = self._get_house_cost(tile_idx)
+        cash = self._get_player_cash(player_id)
+        return cash >= house_cost
+    
+    def _can_sell_building_on_tile(self, player_id, tile_idx):
+        """Check if player can sell a building on a tile."""
+        tile = self.tiles[tile_idx]
+        if tile.get("type") != "property":
+            return False
+        
+        owner = self._get_property_owner(tile_idx)
+        if owner != player_id:
+            return False
+        
+        houses = self._get_property_houses(tile_idx)
+        return houses > 0
+    
+    def _can_sell_property(self, player_id, tile_idx):
+        """Check if player can sell a property."""
+        tile = self.tiles[tile_idx]
+        if tile.get("type") not in ["property", "railroad", "utility"]:
+            return False
+        
+        owner = self._get_property_owner(tile_idx)
+        if owner != player_id:
+            return False
+        
+        # Can only sell if no houses
+        houses = self._get_property_houses(tile_idx)
+        return houses == 0
+    
+    def _select_ai_action(self):
+        """Select action for AI using DQN policy or random fallback."""
+        if self.ai_policy is None or not DQN_AVAILABLE:
+            # Random fallback - pick random valid action
+            mask = self._get_ai_action_mask()
+            valid_actions = np.where(mask > 0)[0]
+            if len(valid_actions) == 0:
+                return 0  # End turn
+            return int(random.choice(valid_actions))
+        
+        # Use trained DQN policy
+        state = self._get_ai_observation()
+        mask = self._get_ai_action_mask()
+        
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=self.ai_device).unsqueeze(0)
+        with torch.no_grad():
+            q_values = self.ai_policy(state_tensor).cpu().numpy()[0]
+        
+        # Mask invalid actions
+        q_values[mask == 0] = -np.inf
+        return int(np.argmax(q_values))
+    
+    def _execute_ai_action(self, action):
+        """Execute an AI action and update game state."""
+        current_player = self._get_current_player()
+        
+        # Action constants (matching rl.py)
+        END_TURN = 0
+        BUY_PROPERTY = 1
+        PAY_JAIL_FINE = 2
+        USE_JAIL_CARD = 3
+        ACCEPT_JAIL = 4
+        BUILD_OFFSET = 5
+        SELL_BUILDING_OFFSET = 45
+        SELL_PROPERTY_OFFSET = 85
+        
+        if action == END_TURN:
+            self._push_message(f"AI ends turn")
+            self.ai_actions_this_turn = 0
+            self._end_turn()
+            return
+        
+        elif action == BUY_PROPERTY:
+            pos = self.player_positions[current_player]
+            tile = self.tiles[pos]
+            self._push_message(f"AI buys {tile['name']}")
+            self._ai_execute_buy_property(current_player, pos)
+            self.ai_actions_this_turn += 1
+            # After buying, end turn to prevent excessive transactions
+            self._push_message(f"AI ends turn")
+            self.ai_actions_this_turn = 0
+            self._end_turn()
+            return
+        
+        elif action == PAY_JAIL_FINE:
+            if self.using_decision_env:
+                self.env.player_cash[current_player] -= 50
+                self.env.player_in_jail[current_player] = False
+                self.env.jail_turns_remaining[current_player] = 0
+            self._push_message(f"AI pays $50 to leave jail")
+            return
+        
+        elif action == USE_JAIL_CARD:
+            if self.using_decision_env:
+                self.env.player_jail_cards[current_player] -= 1
+                self.env.player_in_jail[current_player] = False
+                self.env.jail_turns_remaining[current_player] = 0
+            self._push_message(f"AI uses Get Out of Jail Free card")
+            return
+        
+        elif action == ACCEPT_JAIL:
+            self._push_message(f"AI stays in jail")
+            self.ai_actions_this_turn = 0
+            self._end_turn()
+            return
+        
+        elif BUILD_OFFSET <= action < SELL_BUILDING_OFFSET:
+            tile_idx = action - BUILD_OFFSET
+            tile = self.tiles[tile_idx]
+            self._push_message(f"AI builds on {tile['name']}")
+            self._ai_execute_build_house(current_player, tile_idx)
+            self.ai_actions_this_turn += 1
+            # End turn after building
+            self._push_message(f"AI ends turn")
+            self.ai_actions_this_turn = 0
+            self._end_turn()
+            return
+        
+        elif SELL_BUILDING_OFFSET <= action < SELL_PROPERTY_OFFSET:
+            tile_idx = action - SELL_BUILDING_OFFSET
+            tile = self.tiles[tile_idx]
+            self._push_message(f"AI sells building on {tile['name']}")
+            self._ai_execute_sell_building(current_player, tile_idx, 1)
+            self.ai_actions_this_turn += 1
+            # End turn after selling building
+            self._push_message(f"AI ends turn")
+            self.ai_actions_this_turn = 0
+            self._end_turn()
+            return
+        
+        elif action >= SELL_PROPERTY_OFFSET:
+            tile_idx = action - SELL_PROPERTY_OFFSET
+            tile = self.tiles[tile_idx]
+            self._push_message(f"AI sells {tile['name']}")
+            self._ai_execute_sell_property(current_player, tile_idx)
+            self.ai_actions_this_turn += 1
+            # End turn after selling property
+            self._push_message(f"AI ends turn")
+            self.ai_actions_this_turn = 0
+            self._end_turn()
+            return
+        
+        # Unknown action - end turn
+        self._push_message(f"AI: unknown action {action}")
+        self._end_turn()
+    
+    def _ai_execute_buy_property(self, player_id, tile_idx):
+        """Execute buying a property (AI version)."""
+        tile = self.tiles[tile_idx]
+        price = tile.get("price", 0)
+        
+        if self.using_decision_env:
+            self.env.player_cash[player_id] -= price
+            self.env.property_owner[tile_idx] = player_id
+        tile["owned_by"] = player_id
+    
+    def _ai_execute_build_house(self, player_id, tile_idx):
+        """Execute building a house on a property (AI version)."""
+        house_cost = self._get_house_cost(tile_idx)
+        
+        if self.using_decision_env:
+            self.env.player_cash[player_id] -= house_cost
+            self.env.property_houses[tile_idx] += 1
+    
+    def _ai_execute_sell_building(self, player_id, tile_idx, count=1):
+        """Execute selling buildings on a property (AI version)."""
+        house_cost = self._get_house_cost(tile_idx)
+        refund = (house_cost // 2) * count
+        
+        if self.using_decision_env:
+            self.env.player_cash[player_id] += refund
+            self.env.property_houses[tile_idx] = max(0, self.env.property_houses[tile_idx] - count)
+    
+    def _ai_execute_sell_property(self, player_id, tile_idx):
+        """Execute selling a property (AI version)."""
+        tile = self.tiles[tile_idx]
+        price = tile.get("price", 0)
+        refund = price // 2
+        
+        if self.using_decision_env:
+            self.env.player_cash[player_id] += refund
+            self.env.property_owner[tile_idx] = -1
+        tile["owned_by"] = -1
+    
+    def _process_ai_turn(self):
+        """Process AI player's turn - called from game loop."""
+        current_player = self._get_current_player()
+        
+        # Only process if it's AI's turn (player 1)
+        if current_player != 1:
+            return False
+        
+        current_time = pygame.time.get_ticks()
+        
+        # Check if we need to wait for action delay
+        if current_time - self.ai_last_action_time < self.ai_action_delay:
+            return True  # Still processing
+        
+        # Handle different game states
+        if self.game_state == GameState.AWAITING_ROLL:
+            self._push_message("AI is rolling dice...")
+            self.ai_actions_this_turn = 0  # Reset action counter at start of turn
+            self._handle_roll()
+            self.ai_last_action_time = current_time
+            return True
+        
+        elif self.game_state == GameState.AWAITING_DECISION:
+            # Check if AI has exceeded max actions this turn
+            if self.ai_actions_this_turn >= self.ai_max_actions_per_turn:
+                self._push_message("AI ends turn")
+                self._end_turn()
+                self.ai_actions_this_turn = 0
+                self.ai_last_action_time = current_time
+                return True
+            
+            # Get AI's decision
+            action = self._select_ai_action()
+            self._execute_ai_action(action)
+            self.ai_last_action_time = current_time
+            return True
+        
+        return False
 
     def _build_tiles(self):
         return [
@@ -516,6 +889,9 @@ class MonopolyVisualizer:
         start_x = self.info_rect.left + 16
         # Position buttons after Dice Rolls and Current Tile sections
         start_y = self.info_rect.top + 420
+        
+        # Narrower width for Sell Building to leave room for +/- counter
+        sell_building_width = button_width - 90  # Leave 90px for counter controls
 
         # Button enabled conditions
         def can_roll():
@@ -537,19 +913,19 @@ class MonopolyVisualizer:
             return self.game_state == GameState.AWAITING_DECISION and len(self._get_sellable_property_tiles()) > 0
 
         specs = [
-            ("Roll Dice", self._handle_roll, can_roll, (76, 175, 80)),  # Green
-            ("Buy", self._handle_buy, can_buy, (100, 149, 237)),  # Blue
-            ("End Turn", self._handle_skip, can_skip, (220, 60, 60)),  # Red when enabled
-            ("Build House", self._handle_build, can_build, (76, 175, 80)),  # Green
-            ("Sell Building", self._handle_sell_building, can_sell_building, (210, 180, 140)),  # Tan
-            ("Sell Property", self._handle_sell_property_btn, can_sell_property, (255, 165, 0)),  # Orange
+            ("Roll Dice", self._handle_roll, can_roll, (76, 175, 80), button_width),  # Green
+            ("Buy", self._handle_buy, can_buy, (100, 149, 237), button_width),  # Blue
+            ("End Turn", self._handle_skip, can_skip, (220, 60, 60), button_width),  # Red when enabled
+            ("Build House", self._handle_build, can_build, (76, 175, 80), button_width),  # Green
+            ("Sell Building", self._handle_sell_building, can_sell_building, (210, 180, 140), sell_building_width),  # Tan - narrower
+            ("Sell Property", self._handle_sell_property_btn, can_sell_property, (255, 165, 0), button_width),  # Orange
         ]
 
-        for idx, (label, callback, enabled_fn, color) in enumerate(specs):
+        for idx, (label, callback, enabled_fn, color, width) in enumerate(specs):
             rect = pygame.Rect(
                 start_x,
                 start_y + idx * (button_height + 5),
-                button_width,
+                width,
                 button_height,
             )
             buttons.append(ActionButton(rect, label, callback, color, enabled_fn))
@@ -585,16 +961,42 @@ class MonopolyVisualizer:
         else:
             return int(self.env.property_houses[tile_idx]) if hasattr(self.env, 'property_houses') else 0
     
+    def _get_house_cost(self, tile_idx):
+        """Get house cost for a property."""
+        tile = self.tiles[tile_idx]
+        # Default house costs by color group
+        color_costs = {
+            "brown": 50, "light_blue": 50,
+            "pink": 100, "orange": 100,
+            "red": 150, "yellow": 150,
+            "green": 200, "dark_blue": 200
+        }
+        color = tile.get("color", "")
+        return tile.get("house_cost", color_costs.get(color, 100))
+    
+    def _owns_color_group(self, player_id, color):
+        """Check if player owns all properties in a color group."""
+        if not color:
+            return False
+        
+        color_tiles = [i for i, t in enumerate(self.tiles) if t.get("color") == color]
+        for tile_idx in color_tiles:
+            owner = self._get_property_owner(tile_idx)
+            if owner != player_id:
+                return False
+        return True
+    
     def _can_buy_current_tile(self):
-        """Check if current tile can be bought."""
-        tile = self.tiles[self.selected_tile]
+        """Check if current tile (where player is standing) can be bought."""
+        current_player = self._get_current_player()
+        current_position = self.player_positions[current_player]
+        tile = self.tiles[current_position]
         if tile["type"] not in {"property", "railroad", "utility"}:
             return False
-        owner = self._get_property_owner(self.selected_tile)
+        owner = self._get_property_owner(current_position)
         if owner >= 0:
             return False
         price = tile.get("price", 0)
-        current_player = self._get_current_player()
         return self._get_player_cash(current_player) >= price
     
     def _get_buildable_tiles(self):
@@ -1321,7 +1723,7 @@ class MonopolyVisualizer:
         if self.show_market_overlay:
             self._draw_market_overlay()
         
-        # DEBUG: Draw clickable collision rectangles (remove this after tuning)
+        # DEBUG
         # self._draw_debug_collision_rects()
         
         pygame.display.flip()
@@ -1553,7 +1955,12 @@ class MonopolyVisualizer:
         # Game State indicator
         state_text = ""
         state_color = self.BLACK
-        if self.game_state == GameState.AWAITING_ROLL:
+        
+        # Show AI status if it's AI's turn
+        if current_player == 1:  # AI player
+            state_text = "🤖 AI Thinking..."
+            state_color = (139, 69, 19)  # Brown/bronze color for AI
+        elif self.game_state == GameState.AWAITING_ROLL:
             state_text = "🎲 Roll Dice"
             state_color = (0, 128, 0)
         elif self.game_state == GameState.AWAITING_DECISION:
@@ -1786,6 +2193,14 @@ class MonopolyVisualizer:
             self._push_message("Action cancelled")
             return
         
+        # Check if plus/minus buttons clicked for sell count
+        if hasattr(self, 'plus_rect') and self.plus_rect.collidepoint(pos):
+            self.sell_count = min(self.sell_count + 1, 5)  # Max 5 buildings
+            return
+        if hasattr(self, 'minus_rect') and self.minus_rect.collidepoint(pos):
+            self.sell_count = max(self.sell_count - 1, 0)  # Min 0
+            return
+        
         # Check if a tile was clicked
         clicked_property = self._handle_tile_click(pos)
         if clicked_property:
@@ -1927,18 +2342,19 @@ class MonopolyVisualizer:
                 self._push_message(f"P{player_id + 1} got a Get Out of Jail Free card!")
 
     def _handle_buy(self):
-        """Buy the current tile."""
+        """Buy the tile the player is currently standing on."""
         if self.game_state != GameState.AWAITING_DECISION:
             return
         
-        tile = self.tiles[self.selected_tile]
         current_player = self._get_current_player()
+        current_position = self.player_positions[current_player]
+        tile = self.tiles[current_position]
         
         if tile["type"] not in {"property", "railroad", "utility"}:
             self._push_message("Cannot buy this tile")
             return
         
-        owner = self._get_property_owner(self.selected_tile)
+        owner = self._get_property_owner(current_position)
         if owner >= 0:
             self._push_message(f"Already owned by P{owner + 1}")
             return
@@ -1951,10 +2367,10 @@ class MonopolyVisualizer:
         # Execute purchase
         if self.using_decision_env:
             self.env.player_cash[current_player] -= price
-            self.env.property_owner[self.selected_tile] = current_player
+            self.env.property_owner[current_position] = current_player
         else:
             self.env.player_cash[current_player] -= price
-            self.env.property_owners[self.selected_tile] = current_player
+            self.env.property_owners[current_position] = current_player
         
         self._push_message(f"P{current_player + 1} bought {tile['name']} for ${price}")
         self._end_turn()
@@ -2130,6 +2546,11 @@ class MonopolyVisualizer:
         print("  - When building/selling, click on the target tile")
         print("  - ESC closes the window")
         print("=" * 50)
+        
+        if self.ai_policy is not None:
+            print("[AI] Using trained DQN model for Player 2")
+        else:
+            print("[AI] Using random actions for Player 2 (model not loaded)")
 
         while running:
             for event in pygame.event.get():
@@ -2138,7 +2559,14 @@ class MonopolyVisualizer:
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    self._handle_button_click(event.pos)
+                    # Only process human clicks if it's human's turn
+                    current_player = self._get_current_player()
+                    if current_player == 0:  # Human player
+                        self._handle_button_click(event.pos)
+
+            # Process AI turn if applicable
+            if self.game_state != GameState.GAME_OVER:
+                self._process_ai_turn()
 
             self.render_board()
             self.clock.tick(60)
